@@ -13,6 +13,7 @@ function snapshot(s) {
   return {
     code: s.code, me: s.me, connected: s.connected,
     players: s.players, game: s.game, history: s.history, locks: s.locks,
+    meta: s.meta,
     // türetilmiş: testlerin uygulamanın kendi görüşünü doğrulaması için
     view: s.game ? {
       mode: game.mode(),
@@ -21,6 +22,8 @@ function snapshot(s) {
       visibleGuesses: game.visibleGuesses(),
       everyoneLocked: game.everyoneLocked(),
       expected: game.expectedGuessers(),
+      iAmOwner: room.iAmOwner(),
+      ownerId: room.ownerId(),
     } : null,
   };
 }
@@ -37,6 +40,7 @@ const actions = {
   create: ({ name }) => room.createRoom(name),
   join: ({ code, name }) => room.joinRoom(code, name),
   leave: () => room.leaveRoom(),
+  close: () => room.closeRoom(),
   setRounds: ({ n }) => game.setTotalRounds(n),
   setMode: ({ m }) => game.setMode(m),
   start: () => game.startGame(),

@@ -1,6 +1,6 @@
 // Ekran yönetimi ve oyun dışı ekranların çizimi.
 
-import { colorFor, playerName } from './room.js';
+import { colorFor, playerName, ownerId } from './room.js';
 import { MODE, isMode, historyList, totalScore, soloTotals, rankings } from './logic.js';
 import { verdict } from './scoring.js';
 
@@ -61,6 +61,7 @@ export function renderLobby(state, players, hostId, poolCount) {
     const dot = el('span', 'dot' + (p.online ? '' : ' off'));
     dot.style.background = colorFor(p.id);
     li.append(dot, el('span', 'nm', p.name || 'Bilinmeyen'));
+    if (p.id === ownerId()) li.append(el('span', 'tag', 'kurucu'));
     if (p.id === state.me) li.append(el('span', 'tag me', 'sen'));
     else if (!p.online) li.append(el('span', 'tag', 'çevrimdışı'));
     list.append(li);

@@ -2,8 +2,8 @@
 
 import { authReady } from './firebase.js';
 import {
-  state, subscribe, createRoom, joinRoom, leaveRoom, normalizeCode,
-  playerList, hostId, playerName, isOnline, colorFor,
+  state, subscribe, createRoom, joinRoom, leaveRoom, closeRoom, normalizeCode,
+  playerList, hostId, ownerId, iAmOwner, onlinePlayers, playerName, isOnline, colorFor,
 } from './room.js';
 import * as game from './game.js';
 import * as spec from './spectrums.js';
@@ -118,19 +118,34 @@ async function guarded(hintSel, btnSel, fn) {
   try {
     await fn();
   } catch (err) {
-    console.error(err);
-    setHint(hintSel, err?.message || 'Bir şeyler ters gitti.', true);
+    // Kullanıcıya gösterilen beklenen hatalar (yanlış kod, kapalı oda...)
+    // program hatası değil; konsolu kirletmesin.
+    console.warn('[Frekans]', err?.message || err);
+    setHint(hintSel, friendlyError(err), true);
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
+/** Ham Firebase hatalarını kullanıcının anlayacağı hale getirir. */
+function friendlyError(err) {
+  const msg = String(err?.message || err || '');
+  if (/permission[_ ]denied/i.test(msg)) {
+    return 'Sunucu isteği reddetti. Sayfayı yenileyip tekrar dene; ' +
+      'sorun sürerse tarayıcının site verilerini temizle.';
+  }
+  if (/network|offline|unavailable/i.test(msg)) {
+    return 'Bağlantı kurulamadı. İnternetini kontrol et.';
+  }
+  return msg || 'Bir şeyler ters gitti.';
+}
+
 /* ══════════════════ Lobi ══════════════════ */
 
 function wireLobby() {
-  $('#btn-leave-lobby').addEventListener('click', exitRoom);
-  $('#btn-leave-game').addEventListener('click', exitRoom);
-  $('#btn-leave-over').addEventListener('click', exitRoom);
+  for (const sel of ['#btn-leave-lobby', '#btn-leave-game', '#btn-leave-over']) {
+    wireLeaveButton(sel);
+  }
 
   $('#input-rounds').addEventListener('input', (e) => {
     $('#rounds-value').textContent = e.target.value;
@@ -160,12 +175,53 @@ function wireLobby() {
   });
 }
 
-async function exitRoom() {
-  await leaveRoom();
+/**
+ * Geri düğmesi. Odayı kuran kişi çıkarsa oda kapanır, o yüzden yanında
+ * başkası varken tek dokunuşla kapanmasın: ikinci dokunuş onaydır.
+ */
+function wireLeaveButton(sel) {
+  const btn = $(sel);
+  let armed = false;
+  let timer = null;
+
+  const disarm = () => { armed = false; btn.classList.remove('armed'); btn.textContent = '←'; };
+
+  btn.addEventListener('click', async () => {
+    if (!iAmOwner()) { await exitRoom(); return; }
+
+    // Odada başka kimse yoksa onaya gerek yok
+    if (onlinePlayers().filter(p => p.id !== state.me).length === 0) {
+      await closeAndGoHome();
+      return;
+    }
+    if (armed) { clearTimeout(timer); disarm(); await closeAndGoHome(); return; }
+    armed = true;
+    btn.classList.add('armed');
+    btn.textContent = '✕';
+    toast('Odayı kapatmak için tekrar dokun — herkes çıkacak.', 4000);
+    timer = setTimeout(disarm, 4000);
+  });
+}
+
+async function closeAndGoHome() {
+  await closeRoom();
   history.replaceState(null, '', location.pathname);
+  resetRoomUi();
+  showScreen('home');
+  toast('Oda kapatıldı.');
+}
+
+function resetRoomUi() {
   stageSig = null;
   shownTarget = null;
   joinedAt = 0;
+  poolCount = null;
+}
+
+async function exitRoom(opts) {
+  await leaveRoom(opts);
+  history.replaceState(null, '', location.pathname);
+  resetRoomUi();
   showScreen('home');
 }
 
@@ -185,6 +241,21 @@ function render() {
   if (specOpen) { showScreen('spectrums'); return; }
 
   if (!state.code) { showScreen('home'); stopHeartbeat(); return; }
+
+  if (state.roomGone) {
+    stopHeartbeat();
+    toast('Oda kapandı.', 4000);
+    exitRoom({ notify: false });
+    return;
+  }
+
+  if (state.game?.phase === 'closed') {
+    // Odayı kuran kişi kapattı: kaydımızı geri yazmadan çık.
+    stopHeartbeat();
+    toast(`${playerName(ownerId())} odayı kapattı.`, 4000);
+    exitRoom({ notify: false });
+    return;
+  }
 
   if (!state.game) {
     // Oda kaydı henüz gelmedi. Uzun sürerse takılı kalmayalım.

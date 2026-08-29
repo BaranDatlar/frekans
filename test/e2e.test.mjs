@@ -382,3 +382,62 @@ test('bireysel mod: puanlar oyuncu bazında toplanır ve oyun biter', opts, asyn
   }
   assert.deepEqual(all.flatMap(p => p.errors), []);
 });
+
+/* ══════════════════ Oda sahipliği ══════════════════ */
+
+test('odayı kuran ayrılınca oda kapanır ve herkes çıkar', opts, async (t) => {
+  await freshStart();
+  await seedSpectrums();
+  const { a, b, c, all, code } = await trio();
+  t.after(() => Promise.all(all.map(p => p.close())));
+
+  await waitAll(all, s => s.meta?.hostUid === a.uid, 'kurucu kaydedildi');
+  assert.equal(a.state.view.iAmOwner, true, 'kuran kişi sahip olmalı');
+  assert.equal(b.state.view.iAmOwner, false);
+
+  // Oyun ortasında bile olsa kapanmalı
+  await a.send('setRounds', { n: 3 });
+  await a.send('start');
+  await waitAll(all, s => s.game.phase === 'clue', 'oyun başladı');
+
+  assert.equal(await a.send('close'), true, 'kurucu odayı kapatabilmeli');
+
+  // Diğerleri önce "kapandı" sinyalini görür, sonra oda silinir
+  await waitAll([b, c], s => s.game?.phase === 'closed', 'kapanma sinyali');
+  await waitAll([b, c], s => s.meta == null, 'oda silindi');
+  assert.equal(a.state.code, null, 'kuran kişi odadan çıkmış olmalı');
+
+  // Kapanan odaya artık girilemez
+  await assert.rejects(() => b.send('join', { code, name: 'Beste' }),
+    /oda yok/i, 'kapanan odaya katılınamamalı');
+});
+
+test('kurucu olmayan çıkınca oda açık kalır', opts, async (t) => {
+  await freshStart();
+  await seedSpectrums();
+  const { a, b, c, all } = await trio();
+  t.after(() => Promise.all(all.map(p => p.close())));
+
+  await waitAll(all, s => s.meta?.hostUid === a.uid, 'kurucu kaydedildi');
+  assert.equal(await b.send('close'), false, 'kurucu olmayan kapatamamalı');
+
+  await b.send('leave');
+  await waitAll([a, c], s => s.players[b.uid]?.online === false, 'ayrıldı');
+  assert.equal(a.state.meta?.hostUid, a.uid, 'oda ayakta kalmalı');
+  assert.equal(a.state.game?.phase, 'lobby');
+});
+
+test('kurucu çevrimdışıyken başlatma yetkisi devrolur', opts, async (t) => {
+  await freshStart();
+  await seedSpectrums();
+  const { a, b, c, all } = await trio();
+  t.after(() => Promise.all(all.map(p => p.close())));
+
+  await waitAll(all, s => Object.keys(s.players).length === 3, 'üçü de içeride');
+  await a.send('leave');                     // kapatmadan, sadece bağlantıyı bırak
+  await waitAll([b, c], s => s.players[a.uid]?.online === false, 'kurucu çevrimdışı');
+
+  // Kalanlar oyunu başlatabilmeli — oda kilitlenmemeli
+  await b.send('start');
+  await waitAll([b, c], s => s.game.phase === 'clue', 'oyun başladı');
+});

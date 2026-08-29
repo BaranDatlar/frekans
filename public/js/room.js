@@ -7,6 +7,9 @@ import {
   onDisconnect, uid, onConnectionChange,
 } from './firebase.js';
 
+/** Bir odanın altındaki tüm veri düğümleri (meta hariç). */
+const ROOM_NODES = ['players', 'state', 'history', 'secret', 'usedSpectrumIds', 'locks', 'guesses'];
+
 const ALPHABET = 'ABCDEFGHJKLMNPRSTUVYZ';   // I/O/Q gibi karışanlar yok
 const CODE_LEN = 4;
 const STALE_MS = 24 * 60 * 60 * 1000;       // 24 saatten eski oda devralınabilir
@@ -15,10 +18,12 @@ export const state = {
   code: null,
   me: null,
   name: '',
+  meta: null,         // { createdAt, hostUid }
   players: {},        // uid -> { name, joinedAt, online }
   game: null,         // rooms/{code}/state düğümü
   history: {},        // roundIndex -> kayıt
   locks: {},          // roundIndex -> { uid: kilitlenen ibre değeri }
+  roomGone: false,    // oda sunucudan silindi (kapatıldı)
   connected: false,
 };
 
@@ -41,31 +46,41 @@ export function normalizeCode(raw) {
 
 /** Boş (veya bayatlamış) bir oda kodu kapar ve oyuncuyu içine alır. */
 export async function createRoom(name) {
+  let lastError = null;
+
   for (let attempt = 0; attempt < 12; attempt++) {
     const code = randomCode();
-    const metaRef = dbRef(`rooms/${code}/meta`);
-    let takeover = false;
-    const res = await runTransaction(metaRef, (cur) => {
-      if (cur && Date.now() - (cur.createdAt || 0) < STALE_MS) return;  // iptal: dolu
-      takeover = !!cur;
-      return { createdAt: Date.now() };
-    });
-    if (!res.committed) continue;
+    try {
+      const metaRef = dbRef(`rooms/${code}/meta`);
+      let takeover = false;
+      const res = await runTransaction(metaRef, (cur) => {
+        if (cur && Date.now() - (cur.createdAt || 0) < STALE_MS) return;  // iptal: dolu
+        takeover = !!cur;
+        return { createdAt: Date.now(), hostUid: uid() };
+      });
+      if (!res.committed) continue;
 
-    if (takeover) {
-      // bayat odanın kalıntılarını temizle
-      await Promise.all(['players', 'state', 'history', 'secret', 'usedSpectrumIds']
-        .map(k => remove(dbRef(`rooms/${code}/${k}`))));
+      if (takeover) {
+        // Bayat odanın bütün kalıntılarını temizle. Listede eksik kalan bir
+        // düğüm sonraki oyunu bozar; kurallarda hepsinin toplu silme izni var.
+        await Promise.all(ROOM_NODES.map(k => remove(dbRef(`rooms/${code}/${k}`))));
+      }
+
+      await set(dbRef(`rooms/${code}/state`), {
+        phase: 'lobby', mode: 'shared', roundIndex: 0, totalRounds: 10,
+        order: null, psychicUid: null, spectrum: null, clue: null,
+        dial: { value: 50, by: null, at: 0 }, final: null, lockDeadline: null,
+      });
+      await enterRoom(code, name);
+      return code;
+    } catch (err) {
+      // Tek bir kod yüzünden oda kurma tamamen düşmesin: başka kodla dene.
+      lastError = err;
+      console.warn(`[Frekans] ${code} kodunda oda kurulamadı:`, err?.message || err);
     }
-    await set(dbRef(`rooms/${code}/state`), {
-      phase: 'lobby', mode: 'shared', roundIndex: 0, totalRounds: 10,
-      order: null, psychicUid: null, spectrum: null, clue: null,
-      dial: { value: 50, by: null, at: 0 }, final: null, lockDeadline: null,
-    });
-    await enterRoom(code, name);
-    return code;
   }
-  throw new Error('Boş oda kodu bulunamadı, tekrar dene.');
+
+  throw lastError || new Error('Boş oda kodu bulunamadı, tekrar dene.');
 }
 
 /** Var olan odaya katılır. */
@@ -74,6 +89,9 @@ export async function joinRoom(code, name) {
   if (c.length !== CODE_LEN) throw new Error('Oda kodu 4 harf olmalı.');
   const snap = await get(dbRef(`rooms/${c}/meta`));
   if (!snap.exists()) throw new Error('Böyle bir oda yok.');
+  // Kapatılmış oda birkaç yüz milisaniye daha duruyor olabilir; içine düşme.
+  const phase = (await get(dbRef(`rooms/${c}/state/phase`))).val();
+  if (phase === 'closed') throw new Error('Bu oda kapatıldı.');
   await enterRoom(c, name);
   return c;
 }
@@ -104,6 +122,14 @@ async function enterRoom(code, name) {
     } catch { /* oda silinmiş olabilir */ }
   });
 
+  state.roomGone = false;
+  unsubs.push(onValue(dbRef(`rooms/${code}/meta`), (s) => {
+    const had = !!state.meta;
+    state.meta = s.val();
+    // Odayı bir kez görüp sonra kaybettiysek oda silinmiş demektir.
+    if (had && !state.meta) state.roomGone = true;
+    emit();
+  }));
   unsubs.push(onValue(dbRef(`rooms/${code}/players`), (s) => {
     state.players = s.val() || {};
     emit();
@@ -129,18 +155,22 @@ function detach() {
   if (unsubConn) { try { unsubConn(); } catch { /* yoksay */ } unsubConn = null; }
 }
 
-/** Odadan çık: çevrimdışı işaretle ve her şeyi bırak. */
-export async function leaveRoom() {
+/**
+ * Odadan çık: çevrimdışı işaretle ve her şeyi bırak.
+ * Oda kapanmışsa (`notify: false`) kayıt geri yazılmaz — yoksa silinmiş
+ * odanın altında yetim bir oyuncu düğümü kalır.
+ */
+export async function leaveRoom({ notify = true } = {}) {
   const { code, me } = state;
   detach();
-  if (code && me) {
+  if (code && me && notify) {
     try {
       await onDisconnect(dbRef(`rooms/${code}/players/${me}/online`)).cancel();
       await update(dbRef(`rooms/${code}/players/${me}`), { online: false });
     } catch { /* yoksay */ }
   }
-  state.code = null; state.game = null;
-  state.players = {}; state.history = {}; state.locks = {};
+  state.code = null; state.game = null; state.meta = null;
+  state.players = {}; state.history = {}; state.locks = {}; state.roomGone = false;
   emit();
 }
 
@@ -157,10 +187,53 @@ export function onlinePlayers() {
   return playerList().filter(p => p.online);
 }
 
-/** Lobide "Başlat" düğmesi kimde: en erken katılan çevrimiçi oyuncu. */
+/** Odayı kuran kişi (oda kapatma yetkisi ondadır). */
+export function ownerId() {
+  return state.meta?.hostUid || null;
+}
+
+export function iAmOwner() {
+  return !!state.me && state.me === ownerId();
+}
+
+/**
+ * Oyunu başlatma/ayar yetkisi kimde: odayı kuran kişi. O çevrimdışıysa
+ * en erken katılan çevrimiçi oyuncuya düşer ki oyun kilitlenmesin.
+ */
 export function hostId() {
+  const owner = ownerId();
+  if (owner && isOnline(owner)) return owner;
   const list = onlinePlayers();
   return list.length ? list[0].id : null;
+}
+
+/**
+ * Odayı kapatır. Yalnızca odayı kuran kişi çağırabilir.
+ * Önce herkese "kapandı" sinyali verilir, sonra veri silinir — böylece
+ * diğerleri boş ekranla değil, açık bir mesajla karşılaşır.
+ */
+export async function closeRoom() {
+  const code = state.code;
+  if (!code || !iAmOwner()) return false;
+  try {
+    await update(dbRef(`rooms/${code}/state`), { phase: 'closed' });
+  } catch { /* oda zaten yok olabilir */ }
+  detach();
+  try {
+    await onDisconnect(dbRef(`rooms/${code}/players/${state.me}/online`)).cancel();
+  } catch { /* yoksay */ }
+  // Diğer cihazlar sinyali alsın diye kısa bir soluk, sonra tamamen sil.
+  await new Promise(r => setTimeout(r, 600));
+  try {
+    await remove(dbRef(`rooms/${code}`));
+  } catch (err) {
+    // Sessizce yutmak yerine görünür kıl: burada kalan oda hayalet oda olur.
+    console.warn('[Frekans] Oda silinemedi:', err?.code || err?.message || err);
+  }
+  state.code = null; state.game = null; state.meta = null;
+  state.players = {}; state.history = {}; state.locks = {}; state.roomGone = false;
+  emit();
+  return true;
 }
 
 export function playerName(id) {

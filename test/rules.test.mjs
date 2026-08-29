@@ -15,7 +15,7 @@ const P = (s) => `rooms/${ROOM}/${s}`;
 /** İki oyunculu bir oda kurar; A psişik olur. */
 async function setupRoom(A, B, phase = 'clue', mode = 'shared') {
   await wipe();
-  await A.set(P('meta'), { createdAt: Date.now() });
+  await A.set(P('meta'), { createdAt: Date.now(), hostUid: A.uid });
   await A.set(P('state'), {
     phase, mode, roundIndex: 0, totalRounds: 10,
     order: [A.uid, B.uid], psychicUid: A.uid,
@@ -192,4 +192,55 @@ test('kilitler herkese açık ama başkası adına basılamaz', opts, async () =
     await assert.rejects(() => B.set(P(`locks/0/${B.uid}`), true),
       'kilit ibre değeri olmalı');
   } finally { await A.close(); await B.close(); await C.close(); }
+});
+
+/* ══════════ Oda temizliği ve kapatma ══════════ */
+
+test('bayat oda devralınırken TÜM kalıntılar silinebilir', opts, async () => {
+  // createRoom bayat bir odanın üstüne yazarken her düğümü siler; birinde
+  // izin yoksa oda kurma tamamen permission_denied ile düşer.
+  const A = await makeClient('eski');
+  const B = await makeClient('yeni');
+  try {
+    await wipe();
+    const R = (s) => `rooms/OLDR/${s}`;
+    await A.set(R('meta'), { createdAt: Date.now() - 25 * 3600 * 1000, hostUid: A.uid });
+    await A.set(R('state'), { phase: 'guess', mode: 'solo', psychicUid: A.uid, roundIndex: 0 });
+    await A.set(R('secret/target'), 42);
+    await A.set(R(`players/${A.uid}`), { name: 'Eski', online: true, joinedAt: 1 });
+    await A.set(R(`locks/0/${A.uid}`), 20);
+    await A.set(R(`guesses/0/${A.uid}`), 20);
+    await A.set(R('history/0'), { clue: 'x' });
+    await A.set(R('usedSpectrumIds/s1'), true);
+
+    for (const node of ['players', 'state', 'history', 'secret',
+      'usedSpectrumIds', 'locks', 'guesses']) {
+      assert.equal(await denied(B.remove(R(node))), false,
+        `devralan oyuncu "${node}" düğümünü silebilmeli`);
+    }
+  } finally { await A.close(); await B.close(); }
+});
+
+test('odayı yalnızca kuran kişi kapatabilir', opts, async () => {
+  const A = await makeClient('kurucu');
+  const B = await makeClient('konuk');
+  try {
+    await setupRoom(A, B);                       // meta.hostUid = A
+    assert.ok(await denied(B.remove('rooms/TEST')),
+      'konuk odayı silememeli');
+    assert.equal(await denied(A.remove('rooms/TEST')), false,
+      'kurucu odayı silebilmeli');
+    // Oda düğümünün kendisi okunamaz (izinler alt düğümlerde), meta'ya bakarız
+    assert.equal((await A.get('rooms/TEST/meta')).val(), null, 'oda gerçekten silinmeli');
+  } finally { await A.close(); await B.close(); }
+});
+
+test('kurucu bile odanın üstüne veri yazamaz, sadece silebilir', opts, async () => {
+  const A = await makeClient('kurucu');
+  const B = await makeClient('konuk');
+  try {
+    await setupRoom(A, B);
+    assert.ok(await denied(A.set('rooms/TEST', { meta: { createdAt: 1 } })),
+      'oda düğümüne toptan yazma kapalı olmalı');
+  } finally { await A.close(); await B.close(); }
 });

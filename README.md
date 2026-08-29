@@ -216,12 +216,23 @@ tarayıcıdakiyle birebir aynı kodu çalıştırır.
 
 ---
 
+## Oda sahipliği
+
+Odayı kuran kişi **kurucu**dur (lobide etiketle görünür) ve tur sayısı ile modu
+o ayarlar. Kurucu odadan çıkarsa **oda kapanır**: herkes ana ekrana düşer ve
+oda verisi silinir. Yanında başkası varken tek dokunuşla kapanmasın diye geri
+düğmesi ikinci dokunuşta onaylatır.
+
+Kurucunun sadece bağlantısı koparsa oda kapanmaz — geri dönebilir. Bu sırada
+oyun kilitlenmesin diye başlatma yetkisi geçici olarak en erken katılan
+çevrimiçi oyuncuya geçer.
+
 ## Bilinen sınırlar
 
 - Oyun başladıktan sonra katılanlar o turda izleyici olur; sıraya bir sonraki
   turda eklenirler.
-- Boş odalar veritabanında kalır (birkaç KB). 24 saatten eski bir oda kodu
-  yeniden kullanılırken otomatik temizlenir.
+- Kurucusu kapatmadan terk edilen odalar veritabanında kalır (birkaç KB).
+  24 saatten eski bir oda kodu yeniden kullanılırken otomatik temizlenir.
 - Sesli iletişim uygulamada yok — oyun zaten konuşarak oynanıyor.
 - **Adresi bilen herkes oynayabilir.** Kayıt yok, anonim giriş var; spektrum
   havuzu ortaktır ve giren herkes ekleyip silebilir, 4 harfli oda kodunu bilen

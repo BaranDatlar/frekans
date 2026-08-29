@@ -56,7 +56,14 @@ let _uid = null;
 /** Anonim oturum açıldıktan sonra çözülen promise; uid döner. */
 export const authReady = new Promise((resolve, reject) => {
   onAuthStateChanged(auth, (user) => {
-    if (user) { _uid = user.uid; resolve(user.uid); }
+    if (user) { _uid = user.uid; resolve(user.uid); return; }
+    // Oturum düştü (belirteç yenilenemedi, depolama temizlendi...). Kurallar
+    // "auth != null" istediği için bu durumda HER yazma reddedilir; sessizce
+    // yeniden aç ki kullanıcı "permission denied" duvarına toslamasın.
+    if (_uid) {
+      console.warn('[Frekans] Oturum düştü, yeniden açılıyor.');
+      signInAnonymously(auth).catch(() => {});
+    }
   }, reject);
   signInAnonymously(auth).catch(reject);
 });

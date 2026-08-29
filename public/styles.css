@@ -323,3 +323,5 @@ input[type=range] { accent-color: var(--accent); height: var(--tap); }
 .rank-list .pts[data-p="2"] { color: var(--p2); }
 .rank-list .pts[data-p="1"] { color: #6b7688; }
 .rank-list .pts[data-p="0"] { color: #5a6478; }
+
+.icon-btn.armed { background: #4a2230; color: #ff9a9a; }

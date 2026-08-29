@@ -308,3 +308,70 @@ test('bireysel modda herkes kendi kadranını çevirir', opts, async (t) => {
 
   assert.deepEqual(errors, [], 'konsolda hata olmamalı');
 });
+
+test('odayı kuran çıkınca oda kapanır, diğerleri açığa düşer', opts, async (t) => {
+  await wipe();
+  const browser = await chromium.launch({ channel: 'chrome' });
+  t.after(() => browser.close());
+
+  const errors = [];
+  const pages = [];
+  for (const name of ['Ali', 'Beste', 'Can']) {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name}: ${m.text()}`); });
+    page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
+    await page.goto(BASE + '/');
+    pages.push(page);
+  }
+  const [p1, p2, p3] = pages;
+
+  await p1.fill('#input-name', 'Ali');
+  await p1.click('#btn-create');
+  await p1.waitForSelector('#screen-lobby.active');
+  const code = (await p1.textContent('#lobby-code')).trim();
+  for (const [page, name] of [[p2, 'Beste'], [p3, 'Can']]) {
+    await page.fill('#input-name', name);
+    await page.fill('#input-code', code);
+    await page.click('#btn-join');
+    await page.waitForSelector('#screen-lobby.active');
+  }
+  for (const page of pages) {
+    await page.waitForFunction(() => document.querySelectorAll('#lobby-players li').length === 3);
+  }
+
+  // Kurucu etiketi ilk oyuncuda
+  const tags = await p2.locator('#lobby-players li').first().allTextContents();
+  assert.match(tags.join(' '), /kurucu/, 'kurucu etiketi görünmeli');
+
+  // İlk dokunuş yalnızca onay ister
+  await p1.click('#btn-leave-lobby');
+  await p1.waitForSelector('#toast:not([hidden])', { timeout: 5000 });
+  assert.match(await p1.textContent('#toast'), /tekrar dokun/i, 'onay istemeli');
+  assert.equal(await p1.locator('#screen-lobby.active').count(), 1,
+    'ilk dokunuşta çıkılmamalı');
+  assert.equal(await p2.locator('#screen-lobby.active').count(), 1,
+    'diğerleri lobide kalmalı');
+
+  // İkinci dokunuş odayı kapatır
+  await p1.click('#btn-leave-lobby');
+  await p1.waitForSelector('#screen-home.active', { timeout: 15000 });
+  for (const page of [p2, p3]) {
+    await page.waitForSelector('#screen-home.active', { timeout: 20000 });
+    assert.match(await page.textContent('#toast'), /kapat/i,
+      'kapanma sebebi yazmalı');
+  }
+
+  // Kapanan odaya girilemez
+  await p2.fill('#input-code', code);
+  await p2.click('#btn-join');
+  await p2.waitForFunction(() =>
+    /oda yok|kapatıldı/i.test(document.querySelector('#home-status')?.textContent || ''),
+    null, { timeout: 15000 }).catch(async () => {
+      throw new Error('kapanan odaya girilebildi. ekran=' +
+        await p2.evaluate(() => document.querySelector('.screen.active')?.id) +
+        ' durum=' + JSON.stringify(await p2.textContent('#home-status')));
+    });
+
+  assert.deepEqual(errors, [], 'konsolda hata olmamalı');
+});

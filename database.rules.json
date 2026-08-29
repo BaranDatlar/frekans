@@ -29,10 +29,16 @@
     "rooms": {
       "$code": {
 
+        // Odayı yalnızca kuran kişi, yalnızca tümüyle silebilir.
+        // (Odadan ayrılınca oda kapanır.)
+        ".write": "auth != null && !newData.exists() && data.child('meta/hostUid').val() === auth.uid",
+
         "meta": {
           ".read": "auth != null",
+          // Yazma serbest: bayat oda devralınırken başka biri de yazabilmeli.
           ".write": "auth != null",
           "createdAt": { ".validate": "newData.isNumber()" },
+          "hostUid":   { ".validate": "newData.isString() && newData.val().length <= 64" },
           "$other":    { ".validate": false }
         },
 
@@ -100,6 +106,8 @@
         },
 
         "secret": {
+          // Toplu silme yalnızca bayat oda devralınırken.
+          ".write": "auth != null && !newData.exists()",
           "target": {
             ".read": "auth != null && (root.child('rooms/' + $code + '/state/psychicUid').val() === auth.uid || root.child('rooms/' + $code + '/state/phase').val() === 'reveal')",
             ".write": "auth != null && root.child('rooms/' + $code + '/state/psychicUid').val() === auth.uid",
