@@ -7,7 +7,9 @@ import {
 } from './room.js';
 import * as game from './game.js';
 import * as spec from './spectrums.js';
-import { totalScore } from './logic.js';
+import {
+  totalScore, soloTotals, soloScores, psychicAverage, lockedGuessers,
+} from './logic.js';
 import { scoreFor } from './scoring.js';
 import { Dial } from './dial.js';
 import {
@@ -143,6 +145,12 @@ function wireLobby() {
 
   $('#btn-lobby-spectrums').addEventListener('click', openSpectrums);
 
+  for (const btn of document.querySelectorAll('#mode-picker .mode-opt')) {
+    btn.addEventListener('click', () => {
+      game.setMode(btn.dataset.mode).catch(e => toast(e.message));
+    });
+  }
+
   $('#btn-share').addEventListener('click', async () => {
     const url = `${location.origin}${location.pathname}?oda=${state.code}`;
     try {
@@ -240,18 +248,38 @@ function renderGame() {
   const me = state.me;
   const psychic = g.psychicUid === me;
   const target = game.knownTarget();
+  const solo = game.isSolo();
+  const locked = game.iLocked();
+  const guesses = game.visibleGuesses();
 
   $('#game-round-label').textContent = `Tur ${g.roundIndex + 1}/${g.totalRounds}`;
-  $('#game-score').textContent = totalScore(state.history);
+  $('#game-score').textContent = solo ? (soloTotals(state.history)[me] || 0)
+    : totalScore(state.history);
   $('#spec-left').textContent = g.spectrum?.left ?? '—';
   $('#spec-right').textContent = g.spectrum?.right ?? '—';
 
-  // Önce etkileşimi ayarla: 'reveal'a geçerken sürükleme kilidi kalkmadan
-  // değer uygulanırsa ibre bir tur geç yerine oturur.
-  dial.setInteractive(g.phase === 'guess' && !psychic);
-  dial.setRemoteValue(g.phase === 'reveal'
-    ? (Number.isFinite(g.final) ? g.final : 50)
-    : (g.dial?.value ?? 50));
+  // Sürükleme: tahmin fazında, psişik değilsen ve henüz kilitlemediysen
+  dial.setInteractive(g.phase === 'guess' && !psychic && !locked);
+
+  if (solo) {
+    // Psişiğin kendi ibresi yok; diğerlerini renkli "hayalet" ibre olarak görür.
+    dial.setMainVisible(!psychic);
+    if (!psychic) {
+      const mine = guesses[me] ?? game.myGuess() ?? 50;
+      dial.setRemoteValue(mine);
+    }
+    dial.setGhosts(Object.entries(guesses)
+      .filter(([id]) => id !== me)
+      .map(([id, value]) => ({ id, value, color: colorFor(id) })));
+  } else {
+    dial.setMainVisible(true);
+    dial.setGhosts([]);
+    dial.setRemoteValue(g.phase === 'reveal'
+      ? (Number.isFinite(g.final) ? g.final : 50)
+      : (g.dial?.value ?? 50));
+  }
+
+  renderLegend(solo, psychic, guesses);
 
   // Bantlar: psişik turun başından beri görür, diğerleri sadece açılışta
   const maySeeBands = (psychic && g.phase !== 'reveal') || g.phase === 'reveal';
@@ -261,13 +289,30 @@ function renderGame() {
     dial.setTarget(wantTarget);
   }
 
-  const sig = [g.phase, g.roundIndex, psychic, !!g.spectrum, target != null].join('|');
+  const sig = [g.phase, g.roundIndex, psychic, !!g.spectrum, target != null,
+    game.mode(), locked, !!state.history?.[g.roundIndex]].join('|');
   if (sig !== stageSig) {
     stageSig = sig;
     if (g.phase === 'clue') clueEnteredAt = Date.now();
     buildStage(g, psychic, target);
   }
   updateStageLive(g, psychic);
+}
+
+/** Kadranın altındaki renk açıklaması (yalnızca bireysel modda anlamlı). */
+function renderLegend(solo, psychic, guesses) {
+  const box = $('#legend');
+  const ids = Object.keys(guesses);
+  if (!solo || !ids.length) { box.hidden = true; box.textContent = ''; return; }
+  box.hidden = false;
+  box.textContent = '';
+  for (const id of ids) {
+    const item = el('span');
+    const dot = el('i');
+    dot.style.background = id === state.me ? '#e7ecf3' : colorFor(id);
+    item.append(dot, document.createTextNode(id === state.me ? 'sen' : playerName(id)));
+    box.append(item);
+  }
 }
 
 function buildStage(g, psychic, target) {
@@ -297,6 +342,7 @@ function buildClueStage(stage, g, psychic) {
     input.autocomplete = 'off';
 
     const btn = el('button', 'btn primary wide', 'İpucunu Gönder');
+    btn.id = 'btn-clue-send';
     const send = async () => {
       const v = input.value.trim();
       if (!v) return;
@@ -327,18 +373,35 @@ function buildGuessStage(stage, g, psychic) {
   box.append(el('div', 'what', g.clue || '—'));
   stage.append(box);
 
-  const dragger = el('div', 'dragger');
-  dragger.id = 'dragger';
-  stage.append(dragger);
+  if (!game.isSolo()) {
+    const dragger = el('div', 'dragger');
+    dragger.id = 'dragger';
+    stage.append(dragger);
+  }
+
+  const status = el('div', 'lock-status');
+  status.id = 'lock-status';
+  stage.append(status);
 
   if (psychic) {
-    stage.append(el('p', 'waiting', 'Sessiz kal! Takım kadranı ayarlıyor.'));
+    stage.append(el('p', 'waiting', game.isSolo()
+      ? 'Sessiz kal! Herkes kendi tahminini yapıyor.'
+      : 'Sessiz kal! Takım kadranı ayarlıyor.'));
+    return;
+  }
+
+  if (game.iLocked()) {
+    const undo = el('button', 'btn ghost wide', 'Kilidi geri al');
+    undo.id = 'btn-unlock';
+    undo.addEventListener('click', () => game.unlockGuess().catch(e => toast(e.message)));
+    stage.append(undo);
   } else {
     const lock = el('button', 'btn primary wide', 'Kilitle');
+    lock.id = 'btn-lock';
     lock.addEventListener('click', async () => {
       lock.disabled = true;
-      const ok = await game.lockGuess();
-      if (!ok) lock.disabled = false;
+      try { await game.lockGuess(); }
+      catch (e) { toast(e.message); lock.disabled = false; }
     });
     stage.append(lock);
   }
@@ -349,14 +412,19 @@ function buildRevealStage(stage, g, target) {
     stage.append(el('p', 'waiting', 'Hedef açılıyor…'));
     return;
   }
-  // Puanı history'den beklemeden yerel olarak hesapla: aynı saf fonksiyon,
-  // aynı hedef ve aynı ibre → her cihazda aynı sonuç.
-  const points = scoreFor(target, Number.isFinite(g.final) ? g.final : 50);
 
-  const burst = el('div', 'points-burst');
-  const num = el('div', 'num' + (points ? '' : ' zero'), `+${points}`);
-  burst.append(num, el('div', 'lbl', points === 4 ? 'Tam isabet!' : points ? 'puan' : 'Hedefin dışında'));
-  stage.append(burst);
+  if (game.isSolo()) {
+    buildSoloReveal(stage, g, target);
+  } else {
+    // Puanı history'yi beklemeden yerel hesapla: aynı saf fonksiyon,
+    // aynı hedef ve aynı ibre → her cihazda aynı sonuç.
+    const points = scoreFor(target, Number.isFinite(g.final) ? g.final : 50);
+    const burst = el('div', 'points-burst');
+    burst.append(
+      el('div', 'num' + (points ? '' : ' zero'), `+${points}`),
+      el('div', 'lbl', points === 4 ? 'Tam isabet!' : points ? 'puan' : 'Hedefin dışında'));
+    stage.append(burst);
+  }
 
   const box = el('div', 'clue-box');
   box.append(el('div', 'who', `${playerName(g.psychicUid)} demişti ki`));
@@ -364,11 +432,52 @@ function buildRevealStage(stage, g, target) {
   stage.append(box);
 
   const next = el('button', 'btn primary wide', 'Sonraki Tur');
+  next.id = 'btn-next';
   next.addEventListener('click', async () => {
     next.disabled = true;
     try { await game.nextRound(); } finally { next.disabled = false; }
   });
   stage.append(next);
+}
+
+/** Bireysel mod açılışı: herkesin puanı ve psişiğin ortalaması. */
+function buildSoloReveal(stage, g, target) {
+  const guesses = game.visibleGuesses();
+  const points = soloScores(target, guesses);
+  const psyPoints = psychicAverage(points);
+  const mine = points[state.me];
+
+  const burst = el('div', 'points-burst');
+  const own = state.me === g.psychicUid ? psyPoints : (mine ?? 0);
+  burst.append(
+    el('div', 'num' + (own ? '' : ' zero'), `+${own}`),
+    el('div', 'lbl', state.me === g.psychicUid
+      ? 'ortalama — anlatım puanın'
+      : own === 4 ? 'Tam isabet!' : own ? 'puan' : 'Hedefin dışında'));
+  stage.append(burst);
+
+  const list = el('ul', 'rank-list');
+  const rows = Object.entries(points)
+    .map(([id, pts]) => ({ id, pts, name: playerName(id) }))
+    .sort((a, b) => b.pts - a.pts || a.name.localeCompare(b.name, 'tr'));
+  for (const r of rows) {
+    const li = el('li');
+    if (r.id === state.me) li.classList.add('me');
+    const dot = el('span', 'dot');
+    dot.style.background = r.id === state.me ? '#e7ecf3' : colorFor(r.id);
+    const pts = el('span', 'pts', `+${r.pts}`);
+    pts.dataset.p = String(r.pts);
+    li.append(dot, el('span', 'nm', r.name), pts);
+    list.append(li);
+  }
+  const psy = el('li');
+  const pdot = el('span', 'dot');
+  pdot.style.background = colorFor(g.psychicUid);
+  const psyPts = el('span', 'pts', `+${psyPoints}`);
+  psyPts.dataset.p = String(psyPoints);
+  psy.append(pdot, el('span', 'nm', `${playerName(g.psychicUid)} (psişik)`), psyPts);
+  list.append(psy);
+  stage.append(list);
 }
 
 /** Sahneyi yeniden kurmadan güncellenen küçük parçalar. */
@@ -380,7 +489,31 @@ function updateStageLive(g, psychic) {
       d.textContent = by && by !== state.me ? `${playerName(by)} çeviriyor` : '';
       d.style.color = by ? colorFor(by) : '';
     }
+
+    const status = $('#lock-status');
+    if (status) {
+      status.textContent = '';
+      const expected = game.expectedGuessers();
+      const done = lockedGuessers(game.roundLocks(), expected,
+        game.isSolo() ? null : (g.dial?.value ?? 50)).length;
+
+      const line = el('span');
+      line.append(el('b', null, `${done}/${expected.length}`),
+        document.createTextNode(' kilitledi'));
+      status.append(line);
+
+      const left = game.countdownLeft();
+      if (left != null) {
+        status.append(document.createTextNode(' · '));
+        const c = el('span', 'countdown', `${Math.ceil(left / 1000)} sn`);
+        status.append(c);
+        status.append(el('div', null, 'Süre bitince tur otomatik açılır.'));
+      } else if (!psychic && !game.iLocked()) {
+        status.append(el('div', null, 'Herkes kilitleyince tur açılır.'));
+      }
+    }
   }
+
   if (g.phase === 'clue' && !psychic) {
     const skip = $('#btn-skip');
     if (skip) {

@@ -68,6 +68,20 @@
       <h2 class="section-title">Oyuncular <span class="count" id="lobby-count"></span></h2>
       <ul class="player-list" id="lobby-players"></ul>
 
+      <div class="field">
+        <span>Mod</span>
+        <div class="mode-picker" id="mode-picker">
+          <button class="mode-opt" type="button" data-mode="shared">
+            <b>Ortak Kadran</b>
+            <small>Tek ibre, tek ortak puan. Klasik Wavelength.</small>
+          </button>
+          <button class="mode-opt" type="button" data-mode="solo">
+            <b>Herkes Kendi Kadranı</b>
+            <small>Herkes kendi tahminini yapar, kendi puanını alır. Psişik ortalamayı alır.</small>
+          </button>
+        </div>
+      </div>
+
       <label class="field">
         <span>Tur sayısı <b id="rounds-value">10</b></span>
         <input id="input-rounds" type="range" min="3" max="20" step="1" value="10">
@@ -94,6 +108,7 @@
           <span class="spec-left" id="spec-left">—</span>
           <span class="spec-right" id="spec-right">—</span>
         </div>
+        <div class="legend" id="legend" hidden></div>
       </div>
 
       <div class="stage" id="stage"></div>
@@ -114,6 +129,9 @@
         <h2 id="over-title">—</h2>
         <p id="over-note"></p>
       </div>
+      <h2 class="section-title" id="over-rank-title" hidden>Sıralama</h2>
+      <ul class="rank-list" id="over-rank" hidden></ul>
+
       <h2 class="section-title">Turlar</h2>
       <ul class="history-list" id="over-history"></ul>
       <button class="btn primary" id="btn-again">Tekrar Oyna</button>

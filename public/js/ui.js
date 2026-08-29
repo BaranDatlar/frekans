@@ -1,7 +1,7 @@
 // Ekran yönetimi ve oyun dışı ekranların çizimi.
 
 import { colorFor, playerName } from './room.js';
-import { historyList, totalScore } from './logic.js';
+import { MODE, isMode, historyList, totalScore, soloTotals, rankings } from './logic.js';
 import { verdict } from './scoring.js';
 
 export const $ = (sel) => document.querySelector(sel);
@@ -44,6 +44,13 @@ export function el(tag, className, text) {
 /* ══════════ Lobi ══════════ */
 
 export function renderLobby(state, players, hostId, poolCount) {
+  const iAmHostEarly = hostId === state.me;
+  const activeMode = isMode(state.game?.mode);
+  for (const btn of $$('#mode-picker .mode-opt')) {
+    btn.setAttribute('aria-pressed', String(btn.dataset.mode === activeMode));
+    btn.disabled = !iAmHostEarly;
+  }
+
   $('#lobby-code').textContent = state.code || '····';
   $('#lobby-count').textContent = players.length ? `(${players.length})` : '';
 
@@ -86,13 +93,10 @@ export function renderLobby(state, players, hostId, poolCount) {
 
 export function renderOver(state) {
   const rows = historyList(state.history);
-  const total = totalScore(state.history);
-  const v = verdict(total, rows.length);
+  const solo = isMode(state.game?.mode) === MODE.SOLO;
 
-  $('#over-total').textContent = total;
-  $('#over-max').textContent = `/${rows.length * 4}`;
-  $('#over-title').textContent = v.title;
-  $('#over-note').textContent = v.note;
+  if (solo) renderSoloResult(state, rows);
+  else renderSharedResult(state, rows);
 
   const list = $('#over-history');
   list.textContent = '';
@@ -100,13 +104,61 @@ export function renderOver(state) {
     const li = el('li');
     const txt = el('div', 'h-txt');
     txt.append(el('div', 'h-clue', h.clue || '—'));
-    txt.append(el('div', 'h-spec', `${h.left} ↔ ${h.right} · ${playerName(h.psychicUid)}`));
-    const pts = el('span', 'h-pts', `+${h.points ?? 0}`);
-    pts.dataset.p = String(h.points ?? 0);
+    txt.append(el('div', 'h-spec',
+      `${h.left} ↔ ${h.right} · psişik: ${playerName(h.psychicUid)}`));
+    const p = solo ? (h.psychicPoints ?? 0) : (h.points ?? 0);
+    const pts = el('span', 'h-pts', `+${p}`);
+    pts.dataset.p = String(Math.min(4, Math.max(0, Math.round(p))));
+    pts.title = solo ? 'psişiğin puanı' : 'tur puanı';
     li.append(txt, pts);
     list.append(li);
   }
   if (!rows.length) list.append(el('li', 'empty', 'Hiç tur oynanmadı.'));
+}
+
+/** Ortak mod: tek toplam ve değerlendirme. */
+function renderSharedResult(state, rows) {
+  $('#over-rank').hidden = true;
+  $('#over-rank-title').hidden = true;
+
+  const total = totalScore(state.history);
+  const v = verdict(total, rows.length);
+  $('#over-total').textContent = total;
+  $('#over-max').textContent = `/${rows.length * 4}`;
+  $('#over-title').textContent = v.title;
+  $('#over-note').textContent = v.note;
+}
+
+/** Bireysel mod: kişi başı sıralama. */
+function renderSoloResult(state, rows) {
+  const totals = soloTotals(state.history);
+  const table = rankings(totals, state.players);
+
+  const best = table[0];
+  const tied = table.filter(r => r.points === best?.points);
+  $('#over-total').textContent = best ? best.points : 0;
+  $('#over-max').textContent = `/${rows.length * 4}`;
+  $('#over-title').textContent = !best ? '—'
+    : tied.length > 1 ? 'Berabere!'
+      : `${best.name} kazandı`;
+  $('#over-note').textContent = tied.length > 1
+    ? tied.map(r => r.name).join(', ') + ' aynı puanda.'
+    : `${rows.length} turda toplanan puanlar:`;
+
+  const list = $('#over-rank');
+  list.hidden = false;
+  $('#over-rank-title').hidden = false;
+  list.textContent = '';
+  table.forEach((r, i) => {
+    const li = el('li');
+    if (i === 0) li.classList.add('first');
+    if (r.id === state.me) li.classList.add('me');
+    const dot = el('span', 'dot');
+    dot.style.background = colorFor(r.id);
+    li.append(el('span', 'pos', `${i + 1}.`), dot, el('span', 'nm', r.name),
+      el('span', 'pts', String(r.points)));
+    list.append(li);
+  });
 }
 
 /* ══════════ Spektrum editörü ══════════ */

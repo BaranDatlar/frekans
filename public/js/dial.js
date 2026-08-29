@@ -64,6 +64,7 @@ export class Dial {
       <g class="bands"></g>
       <g class="ticks"></g>
       <path d="${sectorPath(0, 100, R_OUT, R_IN)}" fill="none" stroke="#2a3242" stroke-width="2"/>
+      <g class="ghosts"></g>
       <g class="needle">
         <line x1="${CX}" y1="${CY}" x2="${CX}" y2="${CY - R_OUT + 4}"
               stroke="#e7ecf3" stroke-width="4" stroke-linecap="round"/>
@@ -87,7 +88,11 @@ export class Dial {
 
     this.svg = svg;
     this.bandsGroup = svg.querySelector('.bands');
+    this.ghostsGroup = svg.querySelector('.ghosts');
     this.needle = svg.querySelector('.needle');
+    /** id -> <g class="ghost">; yeniden çizmek yerine güncelleriz ki
+     *  ibreler zıplamadan yumuşak hareket etsin. */
+    this.ghosts = new Map();
     this.root.appendChild(svg);
 
     svg.addEventListener('pointerdown', (e) => this._down(e));
@@ -153,6 +158,52 @@ export class Dial {
     this.value = clampValue(v);
     this.needle.classList.toggle('smooth', animate);
     this.needle.style.transform = `rotate(${((this.value - 50) * 1.8).toFixed(2)}deg)`;
+  }
+
+  /** Ana (beyaz) ibre görünsün mü — psişiğin kendi ibresi yoktur. */
+  setMainVisible(on) {
+    this.needle.style.display = on ? '' : 'none';
+  }
+
+  /**
+   * Diğer oyuncuların ibreleri. Bireysel modda psişik hepsini, tahminciler
+   * yalnızca kendininkini görür; açılışta herkes hepsini görür.
+   * @param {{id:string, value:number, color:string}[]} list
+   */
+  setGhosts(list) {
+    const items = list || [];
+    const seen = new Set();
+
+    for (const item of items) {
+      seen.add(item.id);
+      let g = this.ghosts.get(item.id);
+      if (!g) {
+        g = document.createElementNS(SVG_NS, 'g');
+        g.setAttribute('class', 'ghost');
+        const line = document.createElementNS(SVG_NS, 'line');
+        line.setAttribute('x1', CX); line.setAttribute('y1', CY - R_IN);
+        line.setAttribute('x2', CX); line.setAttribute('y2', CY - R_OUT + 6);
+        line.setAttribute('stroke-width', '5');
+        line.setAttribute('stroke-linecap', 'round');
+        const dot = document.createElementNS(SVG_NS, 'circle');
+        dot.setAttribute('cx', CX);
+        dot.setAttribute('cy', CY - R_OUT + 6);
+        dot.setAttribute('r', '7');
+        dot.setAttribute('stroke', '#0d1117');
+        dot.setAttribute('stroke-width', '2');
+        g.append(line, dot);
+        this.ghostsGroup.appendChild(g);
+        this.ghosts.set(item.id, g);
+      }
+      const [line, dot] = g.children;
+      line.setAttribute('stroke', item.color);
+      dot.setAttribute('fill', item.color);
+      g.style.transform = `rotate(${((clampValue(item.value) - 50) * 1.8).toFixed(2)}deg)`;
+    }
+
+    for (const [id, g] of this.ghosts) {
+      if (!seen.has(id)) { g.remove(); this.ghosts.delete(id); }
+    }
   }
 
   /** target null ise bantlar gizlenir, değilse 2-3-4-3-2 bandı çizilir. */

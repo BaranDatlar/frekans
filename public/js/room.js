@@ -18,6 +18,7 @@ export const state = {
   players: {},        // uid -> { name, joinedAt, online }
   game: null,         // rooms/{code}/state düğümü
   history: {},        // roundIndex -> kayıt
+  locks: {},          // roundIndex -> { uid: kilitlenen ibre değeri }
   connected: false,
 };
 
@@ -57,9 +58,9 @@ export async function createRoom(name) {
         .map(k => remove(dbRef(`rooms/${code}/${k}`))));
     }
     await set(dbRef(`rooms/${code}/state`), {
-      phase: 'lobby', roundIndex: 0, totalRounds: 10,
+      phase: 'lobby', mode: 'shared', roundIndex: 0, totalRounds: 10,
       order: null, psychicUid: null, spectrum: null, clue: null,
-      dial: { value: 50, by: null, at: 0 }, final: null,
+      dial: { value: 50, by: null, at: 0 }, final: null, lockDeadline: null,
     });
     await enterRoom(code, name);
     return code;
@@ -115,6 +116,10 @@ async function enterRoom(code, name) {
     state.history = s.val() || {};
     emit();
   }));
+  unsubs.push(onValue(dbRef(`rooms/${code}/locks`), (s) => {
+    state.locks = s.val() || {};
+    emit();
+  }));
 }
 
 /** Dinleyicileri kapatır; odayı terk etmez. */
@@ -134,7 +139,8 @@ export async function leaveRoom() {
       await update(dbRef(`rooms/${code}/players/${me}`), { online: false });
     } catch { /* yoksay */ }
   }
-  state.code = null; state.game = null; state.players = {}; state.history = {};
+  state.code = null; state.game = null;
+  state.players = {}; state.history = {}; state.locks = {};
   emit();
 }
 
@@ -165,9 +171,16 @@ export function isOnline(id) {
   return !!state.players[id]?.online;
 }
 
-/** uid'den sabit bir renk türetir (veritabanında renk tutmaya gerek yok). */
-const COLORS = ['#4dd4c4', '#7aa2f7', '#f2a65a', '#e07a9b', '#9ece6a', '#bb9af7', '#e0af68', '#79b8d6'];
+/**
+ * Oyuncu rengi. Katılma sırasındaki konuma göre verilir; liste her cihazda
+ * aynı sıralandığı için renkler herkeste aynıdır ve (8 kişiye kadar) çakışmaz.
+ * Bireysel modda ibreler renkle ayırt edildiği için çakışmama önemli.
+ */
+const COLORS = ['#4dd4c4', '#f2a65a', '#7aa2f7', '#e07a9b', '#9ece6a', '#bb9af7', '#e0af68', '#79b8d6'];
 export function colorFor(id) {
+  const idx = playerList().findIndex(p => p.id === id);
+  if (idx >= 0) return COLORS[idx % COLORS.length];
+  // Odadan silinmiş biri için (ör. eski tur kaydı) sabit bir yedek
   let h = 0;
   for (let i = 0; i < (id || '').length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
   return COLORS[h % COLORS.length];

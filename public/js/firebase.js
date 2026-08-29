@@ -66,6 +66,17 @@ export function uid() { return _uid; }
 
 export const dbRef = (path) => ref(db, path);
 
+// Telefon saatleri birbirini tutmaz; geri sayımı sunucu saatine göre
+// hesaplamak için RTDB'nin bildirdiği farkı takip ederiz.
+let _timeOffset = 0;
+onValue(ref(db, '.info/serverTimeOffset'), (snap) => {
+  const v = snap.val();
+  if (typeof v === 'number') _timeOffset = v;
+});
+
+/** Sunucu saatine göre "şimdi" (ms). */
+export function serverNow() { return Date.now() + _timeOffset; }
+
 /** Bağlantı durumu (RTDB'nin kendi sinyali). */
 export function onConnectionChange(cb) {
   return onValue(ref(db, '.info/connected'), (snap) => cb(snap.val() === true));

@@ -279,3 +279,47 @@ input[type=range] { accent-color: var(--accent); height: var(--tap); }
   font-size: 13px; font-weight: 600;
   padding: calc(6px + env(safe-area-inset-top)) 12px 6px;
 }
+
+.ghost {
+  transform-box: view-box; transform-origin: 200px 200px;
+  transition: transform .22s cubic-bezier(.22,.61,.36,1);
+}
+
+/* ══════════ Mod seçimi ══════════ */
+.mode-picker { display: flex; flex-direction: column; gap: 8px; }
+.mode-opt {
+  text-align: left; padding: 12px 14px; border-radius: var(--radius);
+  border: 1px solid var(--line); background: var(--bg-soft); color: var(--text);
+  font-family: inherit; cursor: pointer; display: block; width: 100%;
+}
+.mode-opt b { display: block; font-size: 15.5px; }
+.mode-opt small { display: block; color: var(--muted); font-size: 12.5px; margin-top: 3px; line-height: 1.45; }
+.mode-opt[aria-pressed="true"] { border-color: var(--accent); background: #16302e; }
+.mode-opt[aria-pressed="true"] b { color: var(--accent); }
+.mode-opt:disabled { cursor: default; opacity: .75; }
+
+/* ══════════ İbre açıklaması ══════════ */
+.legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; justify-content: center; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+
+/* ══════════ Kilit durumu ══════════ */
+.lock-status { text-align: center; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
+.lock-status b { color: var(--text); }
+.countdown { color: var(--warn); font-variant-numeric: tabular-nums; font-weight: 700; }
+
+/* ══════════ Sıralama ══════════ */
+.rank-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.rank-list li {
+  display: flex; align-items: center; gap: 11px;
+  background: var(--bg-soft); border-radius: 12px; padding: 11px 14px; font-size: 15.5px;
+}
+.rank-list .pos { color: var(--muted); font-size: 13px; min-width: 20px; }
+.rank-list .pts { margin-left: auto; font-weight: 800; color: var(--accent); font-size: 18px; }
+.rank-list li.first { border: 1px solid var(--accent-d); }
+.rank-list li.me .nm { color: var(--accent); font-weight: 700; }
+
+.rank-list .pts[data-p="3"] { color: var(--p3); }
+.rank-list .pts[data-p="2"] { color: var(--p2); }
+.rank-list .pts[data-p="1"] { color: #6b7688; }
+.rank-list .pts[data-p="0"] { color: #5a6478; }

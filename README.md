@@ -6,7 +6,8 @@
 grubu için web klonu. Herkes kendi telefonundan girer, spektrum kartlarını
 kendiniz yazarsınız.
 
-- **Kooperatif:** takım yok, herkes aynı tarafta. Sırayla biri psişik olur.
+- **İki mod:** ortak kadranla kooperatif ya da herkesin kendi kadranı olduğu
+  bireysel puanlı mod. Takım yok; sırayla biri psişik olur.
 - **Kendi spektrumlarınız:** "Soğuk ↔ Sıcak" gibi kartları uygulama içinden
   ekleyip silersiniz; havuz ortaktır, oyunda rastgele gelir.
 - **Kurulum yok:** bir bağlantı gönderirsiniz, tarayıcıdan oynanır.
@@ -21,8 +22,10 @@ Her tur:
    üzerinde **sadece onun gördüğü** bir hedef bölgesi belirir.
 2. Psişik, hedefin nerede olduğunu anlatan **tek bir ipucu** yazar
    ("ılık çorba"). Sonra susar — yüzde, sayı, yön söylemek yasak.
-3. Diğerleri sesli tartışıp **ibreyi** çevirir. İbre herkeste ortaktır.
-4. Biri **Kilitle** der, hedef açılır.
+3. Diğerleri ibreyi çevirir (moda göre ortak ya da kendi kadranlarında).
+4. **Herkes** kilitleyince hedef açılır. İlk kilitten sonra 20 saniyelik bir
+   geri sayım başlar; süre biterse tur kendiliğinden açılır, kimse beklemede
+   kalmaz.
 
 **Puan** — hedef merkezine yakınlığa göre:
 
@@ -32,8 +35,24 @@ Her tur:
     0                  ↑ hedef                          100
 ```
 
-Merkez band 4, yanları 3, en dışı 2, dışarısı 0 puan. Turlar bitince toplam
-puana göre bir değerlendirme çıkar. Tur sayısı lobide ayarlanır (3–20).
+Merkez band 4, yanları 3, en dışı 2, dışarısı 0 puan. Tur sayısı lobide
+ayarlanır (3–20).
+
+### Modlar
+
+Lobide odayı kuran kişi seçer.
+
+**Ortak Kadran** — klasik kooperatif. Tek bir ibre vardır, herkes çevirebilir,
+sesli tartışılır. Tur puanı ortak havuza yazılır, sonunda tek bir değerlendirme
+çıkar. Biri ibreyi oynatırsa daha önce basılmış onaylar düşer, çünkü onay
+basıldığı andaki ibre değerine bağlıdır — kimse görmediği bir konumu
+onaylamış olmaz.
+
+**Herkes Kendi Kadranı** — herkesin ayrı ibresi ve ayrı puanı vardır.
+Tahminciler birbirinin ibresini **göremez** (bunu güvenlik kuralı zorlar),
+psişik ise hepsini canlı görür. Açılışta bütün ibreler kadranda belirir.
+Psişik, tahmincilerin puan **ortalamasını** alır — yani ne kadar çok kişiye
+iyi anlattıysa o kadar kazanır. Oyun sonunda kişi başı sıralama çıkar.
 
 ---
 
@@ -114,9 +133,9 @@ Emülatör Java gerektirir (`java -version` ile kontrol et).
 |---|---|
 | `test/scoring.test.mjs` | Puanlama matematiği, bant sınırları, hedef üretimi |
 | `test/logic.test.mjs` | Sıra devri, oyuncu ekleme, kart seçimi |
-| `test/rules.test.mjs` | **Güvenlik kuralları** — hedefi kimin okuyabildiği |
+| `test/rules.test.mjs` | **Güvenlik kuralları** — hedefi ve tahmin ibrelerini kimin okuyabildiği |
 | `test/e2e.test.mjs` | Üç worker, gerçek `room.js`/`game.js`, tam oyun |
-| `test/ui.test.mjs` | Üç Chrome bağlamı; kadran, senkron, ekranlar |
+| `test/ui.test.mjs` | Üç Chrome bağlamı; kadran, senkron, iki mod, ekranlar |
 
 `scripts/live-smoke.mjs` (`npm run smoke`) bunlardan ayrıdır: **canlı yayında**
 gerçekten bir tur oynar, dolayısıyla üretim veritabanına yazar. Deploy sonrası
@@ -146,7 +165,12 @@ idempotent yazılır, toplam istemcide türetilir — "puan iki kez eklendi"
 hatası yapısal olarak imkânsızdır.
 
 **Her faz geçişi tek bir transaction'dır** (`rooms/{kod}/state` üzerinde).
-İki kişi aynı anda "Kilitle"ye bassa ikincisi iptal olur.
+Turu kim açarsa açsın ikinci deneme iptal olur.
+
+**Onaylar ibre değerine bağlıdır.** Kilit `true` değil, basıldığı andaki ibre
+değeri olarak saklanır. Ortak modda ibre oynayınca eski onaylar kendiliğinden
+geçersizleşir — kimsenin başkasının verisini silmesi gerekmez, dolayısıyla
+temizleme yarışı da yoktur.
 
 **İbre** sürüklenirken 150 ms'de bir yazılır, diğer cihazlarda yumuşatılarak
 gösterilir. Kendi parmağın kadrandayken uzaktan gelen değer yok sayılır —
@@ -160,10 +184,14 @@ spectrums/{id}          { left, right, addedBy, createdAt }   ortak havuz
 rooms/{KOD}/
   meta/createdAt
   players/{uid}         { name, online, joinedAt }
-  state                 { phase, roundIndex, totalRounds, order,
-                          psychicUid, spectrum, clue, dial, final }
-  secret/target         korumalı düğüm
-  history/{tur}         { clue, left, right, target, dial, points, psychicUid }
+  state                 { phase, mode, roundIndex, totalRounds, order,
+                          psychicUid, spectrum, clue, dial, final,
+                          lockDeadline }
+  secret/target         korumalı: yalnızca psişik, açılışta herkes
+  guesses/{tur}/{uid}   korumalı: sahibi + psişik, açılışta herkes
+  locks/{tur}/{uid}     kilitlenen ibre değeri (herkese açık)
+  history/{tur}         { clue, left, right, target, psychicUid, mode,
+                          dial+points | guesses+points+psychicPoints }
   usedSpectrumIds/{id}
 ```
 

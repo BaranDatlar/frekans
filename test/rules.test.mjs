@@ -13,11 +13,11 @@ const ROOM = 'TEST';
 const P = (s) => `rooms/${ROOM}/${s}`;
 
 /** İki oyunculu bir oda kurar; A psişik olur. */
-async function setupRoom(A, B, phase = 'clue') {
+async function setupRoom(A, B, phase = 'clue', mode = 'shared') {
   await wipe();
   await A.set(P('meta'), { createdAt: Date.now() });
   await A.set(P('state'), {
-    phase, roundIndex: 0, totalRounds: 10,
+    phase, mode, roundIndex: 0, totalRounds: 10,
     order: [A.uid, B.uid], psychicUid: A.uid,
     spectrum: { id: 'x', left: 'Soğuk', right: 'Sıcak' },
     clue: 'ılık', dial: { value: 50, by: null, at: 0 }, final: null,
@@ -126,4 +126,70 @@ test('kök dizin okunamaz', opts, async () => {
   try {
     assert.ok(await denied(A.get('/')), 'kökte okuma kapalı olmalı');
   } finally { await A.close(); }
+});
+
+/* ══════════ Bireysel mod: tahmin ibreleri ══════════ */
+
+test('tahminciler birbirinin ibresini okuyamaz, psişik hepsini görür', opts, async () => {
+  const A = await makeClient('psychic');
+  const B = await makeClient('guesser1');
+  const C = await makeClient('guesser2');
+  try {
+    await setupRoom(A, B, 'guess', 'solo');
+    await C.set(P(`players/${C.uid}`), { name: 'Can', online: true, joinedAt: Date.now() });
+
+    await B.set(P(`guesses/0/${B.uid}`), 30);
+    await C.set(P(`guesses/0/${C.uid}`), 70);
+
+    // Kendi ibresini okuyabilir
+    assert.equal((await B.get(P(`guesses/0/${B.uid}`))).val(), 30);
+
+    // Diğerininkini okuyamaz — ne tek tek ne de toplu
+    assert.ok(await denied(C.get(P(`guesses/0/${B.uid}`))),
+      'tahminci başkasının ibresini okuyamamalı');
+    assert.ok(await denied(C.get(P('guesses/0'))),
+      'tahminci tüm ibre listesini okuyamamalı');
+
+    // Psişik hepsini görür
+    const all = (await A.get(P('guesses/0'))).val();
+    assert.deepEqual(all, { [B.uid]: 30, [C.uid]: 70 }, 'psişik canlı görmeli');
+
+    // Açılışta herkes görür
+    await B.update(P('state'), { phase: 'reveal' });
+    assert.deepEqual((await C.get(P('guesses/0'))).val(), { [B.uid]: 30, [C.uid]: 70 });
+  } finally { await A.close(); await B.close(); await C.close(); }
+});
+
+test('başkasının ibresi yazılamaz, tahmin fazı dışında yazılamaz', opts, async () => {
+  const A = await makeClient('psychic');
+  const B = await makeClient('guesser1');
+  const C = await makeClient('guesser2');
+  try {
+    await setupRoom(A, B, 'guess', 'solo');
+    assert.ok(await denied(C.set(P(`guesses/0/${B.uid}`), 99)),
+      'başkasının ibresine yazılamamalı');
+    await assert.rejects(() => B.set(P(`guesses/0/${B.uid}`), 150), 'aralık dışı');
+
+    // Açılıştan sonra liste donmalı — yoksa cihazlar farklı puan hesaplar
+    await B.update(P('state'), { phase: 'reveal' });
+    assert.ok(await denied(B.set(P(`guesses/0/${B.uid}`), 10)),
+      'açılıştan sonra ibre değiştirilememeli');
+  } finally { await A.close(); await B.close(); await C.close(); }
+});
+
+test('kilitler herkese açık ama başkası adına basılamaz', opts, async () => {
+  const A = await makeClient('psychic');
+  const B = await makeClient('guesser1');
+  const C = await makeClient('guesser2');
+  try {
+    await setupRoom(A, B, 'guess');
+    await B.set(P(`locks/0/${B.uid}`), 42);
+
+    assert.equal((await C.get(P('locks/0'))).val()[B.uid], 42,
+      'kim kilitledi herkes görebilmeli');
+    assert.ok(await denied(C.set(P(`locks/0/${B.uid}`), 10)),
+      'başkasının kilidi basılamamalı');
+    await assert.rejects(() => B.set(P(`locks/0/${B.uid}`), true),
+      'kilit ibre değeri olmalı');
+  } finally { await A.close(); await B.close(); await C.close(); }
 });

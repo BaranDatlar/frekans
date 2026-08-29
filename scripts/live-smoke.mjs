@@ -54,7 +54,7 @@ for (const g of guessers) assert.equal(await g.locator('#dial .bands path').coun
 console.log('✔ gizlilik: hedef sadece psişikte');
 
 await psychic.fill('#clue-input', 'canlı deneme');
-await psychic.click('text=İpucunu Gönder');
+await psychic.click('#btn-clue-send');
 for (const p of pages) await p.waitForFunction(() =>
   document.querySelector('.clue-box .what')?.textContent === 'canlı deneme', null, { timeout: 20000 });
 console.log('✔ ipucu üç cihazda');
@@ -71,14 +71,21 @@ for (const p of pages.filter(x => x !== guessers[0])) {
 }
 console.log('✔ ibre senkronu');
 
-await guessers[1].click('text=Kilitle');
+// Tek kilit turu açmamalı, herkes onaylayınca açılır
+await guessers[0].click('#btn-lock');
+for (const p of pages) await p.waitForFunction(() =>
+  document.querySelector('#lock-status')?.textContent.includes('1/2'), null, { timeout: 20000 });
+assert.equal(await guessers[1].locator('.points-burst').count(), 0,
+  'bir kişinin kilidiyle tur açılmamalı');
+console.log('✔ tek kilit turu açmıyor');
+await guessers[1].click('#btn-lock');
 const scores = [];
 for (const p of pages) { await p.waitForSelector('.points-burst .num', { timeout: 20000 });
   scores.push(await p.textContent('.points-burst .num')); }
 assert.equal(new Set(scores).size, 1, `puan farklı: ${scores}`);
 console.log('✔ puan üç cihazda aynı:', scores[0]);
 
-await pages[0].click('text=Sonraki Tur');
+await pages[0].click('#btn-next');
 for (const p of pages) await p.waitForFunction(() =>
   document.querySelector('#game-round-label')?.textContent === 'Tur 2/10', null, { timeout: 20000 });
 console.log('✔ sonraki tur');

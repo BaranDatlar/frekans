@@ -68,6 +68,37 @@
           ".write": "auth != null"
         },
 
+        // Kim kilitledi. Herkese açık (arayüzde "2/3 kilitledi" yazar),
+        // ama kimse başkasının kilidini basamaz.
+        "locks": {
+          ".read": "auth != null",
+          // Toplu silme yalnızca yeni oyun başlarken.
+          ".write": "auth != null && !newData.exists()",
+          "$round": {
+            "$uid": {
+              ".write": "auth != null && auth.uid === $uid",
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+            }
+          }
+        },
+
+        // Bireysel moddaki tahmin ibreleri. Hedef kadar gizli:
+        // tahminciler birbirini GÖREMEZ, psişik canlı görür,
+        // faz 'reveal' olunca herkese açılır.
+        "guesses": {
+          ".write": "auth != null && !newData.exists()",
+          "$round": {
+            ".read": "auth != null && (root.child('rooms/' + $code + '/state/psychicUid').val() === auth.uid || root.child('rooms/' + $code + '/state/phase').val() === 'reveal')",
+            "$uid": {
+              ".read": "auth != null && auth.uid === $uid",
+              // Yalnızca tahmin fazında yazılabilir: açılıştan sonra liste
+              // donduğu için her cihaz aynı puanları hesaplar.
+              ".write": "auth != null && auth.uid === $uid && root.child('rooms/' + $code + '/state/phase').val() === 'guess'",
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+            }
+          }
+        },
+
         "secret": {
           "target": {
             ".read": "auth != null && (root.child('rooms/' + $code + '/state/psychicUid').val() === auth.uid || root.child('rooms/' + $code + '/state/phase').val() === 'reveal')",
