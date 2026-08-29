@@ -1,0 +1,40 @@
+{
+  "database": {
+    "rules": "database.rules.json"
+  },
+  "hosting": {
+    "public": "public",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "headers": [
+      {
+        "source": "**/*.@(js|json|html)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, max-age=0"
+          }
+        ]
+      }
+    ]
+  },
+  "emulators": {
+    "auth": {
+      "port": 9099
+    },
+    "database": {
+      "port": 9000
+    },
+    "hosting": {
+      "port": 5055
+    },
+    "ui": {
+      "enabled": true,
+      "port": 4000
+    },
+    "singleProjectMode": true
+  }
+}

@@ -1,0 +1,81 @@
+{
+  // Frekans — Realtime Database güvenlik kuralları.
+  //
+  // Oyunun tek gerçek sırrı hedefin konumudur. Onu "secret/target" altında
+  // tutup okumasını psişikle (ve faz 'reveal' olduğunda herkesle) sınırlıyoruz.
+  //
+  // ÖNEMLİ: RTDB'de üst düğüme verilen .read alt düğümlerde İPTAL EDİLEMEZ.
+  // Bu yüzden "rooms/$code" seviyesinde .read TANIMLANMAZ; izin her alt
+  // düğüme tek tek verilir, "secret" ise kendi kuralıyla ayrı durur.
+
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    // Ortak spektrum havuzu: giriş yapan herkes okur, ekler, siler.
+    "spectrums": {
+      ".read": "auth != null",
+      "$sid": {
+        ".write": "auth != null",
+        ".validate": "!newData.exists() || newData.hasChildren(['left', 'right'])",
+        "left":      { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 28" },
+        "right":     { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 28" },
+        "addedBy":   { ".validate": "newData.isString() && newData.val().length <= 64" },
+        "createdAt": { ".validate": "newData.isNumber()" },
+        "$other":    { ".validate": false }
+      }
+    },
+
+    "rooms": {
+      "$code": {
+
+        "meta": {
+          ".read": "auth != null",
+          ".write": "auth != null",
+          "createdAt": { ".validate": "newData.isNumber()" },
+          "$other":    { ".validate": false }
+        },
+
+        "players": {
+          ".read": "auth != null",
+          // Toplu silme yalnızca bayat oda devralınırken gerekir. Bu kural
+          // sadece "players tamamen siliniyor" durumunda geçer; normal
+          // yazımlarda newData var olduğu için aşağıdaki $uid kuralına düşer.
+          ".write": "auth != null && !newData.exists()",
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid",
+            "name":     { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 14" },
+            "online":   { ".validate": "newData.isBoolean()" },
+            "joinedAt": { ".validate": "newData.isNumber()" },
+            "$other":   { ".validate": false }
+          }
+        },
+
+        // Faz makinesi. Tüm geçişler bu düğüm üzerinde transaction ile yapılır.
+        "state": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        },
+
+        // Tur sonuçları. İçerik deterministik olduğu için kim yazarsa aynı.
+        "history": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        },
+
+        "usedSpectrumIds": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        },
+
+        "secret": {
+          "target": {
+            ".read": "auth != null && (root.child('rooms/' + $code + '/state/psychicUid').val() === auth.uid || root.child('rooms/' + $code + '/state/phase').val() === 'reveal')",
+            ".write": "auth != null && root.child('rooms/' + $code + '/state/psychicUid').val() === auth.uid",
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+          }
+        }
+      }
+    }
+  }
+}
