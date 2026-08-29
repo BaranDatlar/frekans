@@ -35,6 +35,11 @@ const needleValue = (page) => page.evaluate(() => {
 
 const bandCount = (page) => page.locator('#dial .bands path').count();
 
+/** Hedef bandının çizim geometrisi — cihazlar arası karşılaştırmak için. */
+const bandShape = (page) => page.evaluate(() =>
+  [...document.querySelectorAll('#dial .bands path')]
+    .map(el => `${el.getAttribute('fill')}@${el.getAttribute('d')}`).join('|'));
+
 test('üç tarayıcıdan bir tur oynanır', opts, async (t) => {
   await wipe();
   assert.equal(await dump(), null, 'emülatör temiz başlamalı');
@@ -125,6 +130,7 @@ test('üç tarayıcıdan bir tur oynanır', opts, async (t) => {
   for (const g of guessers) {
     assert.equal(await bandCount(g), 0, 'tahminci hedef bantlarını GÖRMEMELİ');
   }
+  const psychicBand = await bandShape(psychic);
 
   // ── İpucu
   await psychic.fill('#clue-input', 'ılık çorba');
@@ -175,6 +181,12 @@ test('üç tarayıcıdan bir tur oynanır', opts, async (t) => {
     await page.waitForSelector('.points-burst .num', { timeout: 15000 });
     assert.equal(await bandCount(page), 5, 'açılışta herkes bantları görmeli');
   }
+  // ── İpucunu verenin gördüğü aralık, açılışta herkesin gördüğüyle AYNI olmalı
+  for (const page of pages) {
+    assert.equal(await bandShape(page), psychicBand,
+      'psişiğin gördüğü hedef aralığı ile açılıştaki aralık aynı olmalı');
+  }
+
   const scores = await Promise.all(pages.map(p => p.textContent('.points-burst .num')));
   assert.equal(new Set(scores).size, 1, `puan herkeste aynı olmalı, gelen: ${scores}`);
   assert.match(scores[0], /^\+[0-4]$/);

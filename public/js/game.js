@@ -68,6 +68,7 @@ export async function startGame() {
     st.roundIndex = 0;
     st.order = order;
     st.psychicUid = order[0];
+    st.drawId = null;
     st.spectrum = null;
     st.clue = null;
     st.final = null;
@@ -102,13 +103,18 @@ export async function ensureRoundDrawn() {
     const usedSnap = await get(dbRef(path('usedSpectrumIds')));
     const picked = pickSpectrum(pool, usedSnap.val() || {});
     const target = randomTarget();
+    // Her çekilişin benzersiz damgası. Hedef önbelleği buna bağlanır; tur
+    // numarası yetmez, çünkü sıra atlanınca ya da yeniden oynanınca AYNI tur
+    // numarasına yeni bir hedef gelir.
+    const drawId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
     // Gizli hedef önce yazılır: kart göründüğünde hedef mutlaka hazır olsun.
     await set(dbRef(path('secret/target')), target);
-    rememberTarget(g.roundIndex, target);
+    rememberTarget(g.roundIndex, drawId, target);
 
     const res = await runTransaction(stateRef(), (st) => {
       if (!st || st.phase !== 'clue' || st.spectrum || st.psychicUid !== uid()) return;
+      st.drawId = drawId;
       st.spectrum = {
         id: picked.spectrum.id,
         left: picked.spectrum.left,
@@ -269,14 +275,30 @@ async function revealNow() {
 
 /* ══════════ Gizli hedef ══════════ */
 
-const targetCache = new Map();
-const keyFor = (idx) => `${state.code}:${idx}`;
+/**
+ * Hedef önbelleği. Yalnızca TEK bir çekilişe aittir ve `drawId` ile
+ * doğrulanır.
+ *
+ * Neden tur numarası yetmiyor: sıra atlandığında ve "Tekrar Oyna"dan sonra
+ * aynı tur numarasına YENİ bir hedef çekilir. Tur numarasına dayanan önbellek
+ * bu durumda bayat hedefi saklamaya devam ediyor, psişik doğru yeri görürken
+ * tahminciler bambaşka bir yerde bant görüyordu.
+ */
+let cachedTarget = null;   // { code, round, drawId, value }
 
-function rememberTarget(idx, value) { targetCache.set(keyFor(idx), value); }
+const currentDrawId = () => state.game?.drawId ?? null;
+
+function rememberTarget(round, drawId, value) {
+  cachedTarget = { code: state.code, round, drawId, value };
+}
 
 export function knownTarget() {
-  const idx = state.game?.roundIndex;
-  return idx == null ? null : (targetCache.get(keyFor(idx)) ?? null);
+  const g = state.game;
+  if (!g || !cachedTarget) return null;
+  if (cachedTarget.code !== state.code) return null;
+  if (cachedTarget.round !== g.roundIndex) return null;
+  if (cachedTarget.drawId !== currentDrawId()) return null;
+  return cachedTarget.value;
 }
 
 let fetching = false;
@@ -296,7 +318,10 @@ export async function fetchTarget() {
   try {
     const snap = await get(dbRef(path('secret/target')));
     const val = snap.val();
-    if (typeof val === 'number') { rememberTarget(g.roundIndex, val); return val; }
+    if (typeof val === 'number') {
+      rememberTarget(g.roundIndex, currentDrawId(), val);
+      return val;
+    }
     return null;
   } catch {
     return null;   // izin yok / bağlantı yok — bir sonraki döngüde tekrar denenir
@@ -405,6 +430,7 @@ export function scheduleHistoryFallback() {
 /* ══════════ Tur geçişi ══════════ */
 
 function resetRoundFields(st) {
+  st.drawId = null;
   st.spectrum = null;
   st.clue = null;
   st.final = null;
@@ -454,7 +480,7 @@ export async function restart() {
     return st;
   });
   if (res.committed) {
-    targetCache.clear();
+    cachedTarget = null;
     myGuessLocal = null;
     myGuessRound = -1;
     await clearRoundData();

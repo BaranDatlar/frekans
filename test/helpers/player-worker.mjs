@@ -17,6 +17,7 @@ function snapshot(s) {
     // türetilmiş: testlerin uygulamanın kendi görüşünü doğrulaması için
     view: s.game ? {
       mode: game.mode(),
+      target: game.knownTarget(),
       iLocked: game.iLocked(),
       myGuess: game.myGuess(),
       visibleGuesses: game.visibleGuesses(),

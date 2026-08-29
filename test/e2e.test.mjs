@@ -441,3 +441,82 @@ test('kurucu çevrimdışıyken başlatma yetkisi devrolur', opts, async (t) => 
   await b.send('start');
   await waitAll([b, c], s => s.game.phase === 'clue', 'oyun başladı');
 });
+
+/* ══════════════════ Hedef tutarlılığı ══════════════════ */
+
+test('sıra atlanınca herkes AYNI hedefi görür', opts, async (t) => {
+  await freshStart();
+  await seedSpectrums();
+  const { a, all } = await trio();
+  t.after(() => Promise.all(all.map(p => p.close())));
+
+  await a.send('setRounds', { n: 3 });
+  await a.send('start');
+  await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'ilk kart çekildi');
+
+  const first = psychicOf(all);
+  const firstTarget = await first.psychic.send('knownTarget');
+  assert.equal(typeof firstTarget, 'number');
+
+  // Sıra devredilince yeni psişik YENİ bir hedef çeker
+  await first.others[0].send('skip');
+  await waitAll(all, s => s.game.psychicUid !== first.psychic.uid && s.game.spectrum,
+    'yeni psişik kart çekti');
+
+  const second = psychicOf(all);
+  const secondTarget = await second.psychic.send('knownTarget');
+  assert.notEqual(secondTarget, firstTarget, 'yeni tur yeni hedef almalı');
+
+  await second.psychic.send('clue', { text: 'atlandı' });
+  await waitAll(all, s => s.game.phase === 'guess', 'tahmin fazı');
+  for (const o of second.others) await o.send('lock');
+  await waitAll(all, s => s.game.phase === 'reveal', 'açılış');
+  await waitAll(all, s => s.history && s.history[0], 'sonuç kaydedildi');
+
+  // Eski psişiğin elinde bayat hedef kalmamalı
+  await waitAll(all, s => s.view.target === secondTarget,
+    `herkes güncel hedefi görmeli (bayat hedef: ${firstTarget})`);
+  for (const p of all) {
+    assert.notEqual(await p.send('knownTarget'), firstTarget,
+      `${p.name} bayat hedefi tutmamalı`);
+  }
+  assert.equal(all[0].state.history[0].target, secondTarget, 'kayıt da güncel hedefle');
+});
+
+test('tekrar oynayınca eski turun hedefi taşınmaz', opts, async (t) => {
+  await freshStart();
+  await seedSpectrums();
+  const { a, all } = await trio();
+  t.after(() => Promise.all(all.map(p => p.close())));
+
+  await a.send('setRounds', { n: 3 });
+  await a.send('start');
+
+  const targets = [];
+  for (let r = 0; r < 3; r++) {
+    const { idx, psychic } = await playRound(all, 50, `oyun1-${r}`);
+    targets.push(all[0].state.history[idx].target);
+    await psychic.send('next');
+  }
+  await waitAll(all, s => s.game.phase === 'gameover', 'oyun bitti');
+
+  // Tekrar oyna: aynı tur numaraları, YENİ hedefler
+  await all[2].send('restart');
+  await waitAll(all, s => s.game.phase === 'lobby', 'lobiye dönüldü');
+  await all[0].send('start');
+  await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
+
+  const { psychic } = psychicOf(all);
+  const target = await psychic.send('knownTarget');
+
+  await psychic.send('clue', { text: 'ikinci oyun' });
+  await waitAll(all, s => s.game.phase === 'guess', 'tahmin fazı');
+  const others = all.filter(p => p !== psychic);
+  for (const o of others) await o.send('lock');
+  await waitAll(all, s => s.game.phase === 'reveal', 'açılış');
+  await waitAll(all, s => s.history && s.history[0], 'sonuç kaydedildi');
+
+  await waitAll(all, s => s.view.target === target,
+    `herkes yeni oyunun hedefini görmeli, eskisini değil (${targets[0]})`);
+  assert.equal(all[0].state.history[0].target, target, 'kayıt da yeni hedefle');
+});
