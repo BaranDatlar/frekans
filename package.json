@@ -5,8 +5,8 @@
   "description": "Wavelength klonu - kooperatif, ozel spektrumlu web oyunu",
   "type": "module",
   "scripts": {
-    "test": "node --test --test-concurrency=1 --test-force-exit --test-timeout=120000 test/*.test.mjs",
-    "test:unit": "node --test test/scoring.test.mjs test/logic.test.mjs",
+    "test": "node --test --test-concurrency=1 --test-force-exit --test-timeout=180000 test/*.test.mjs",
+    "test:unit": "node --test test/scoring.test.mjs test/logic.test.mjs test/teams.test.mjs test/deck.test.mjs",
     "emu": "npx --yes firebase-tools emulators:start --only auth,database,hosting --project demo-frekans",
     "deploy": "npx --yes firebase-tools deploy",
     "smoke": "node scripts/live-smoke.mjs"

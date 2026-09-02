@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 const WORKER = fileURLToPath(new URL('./player-worker.mjs', import.meta.url));
 
+let spawnSeq = 0;
+
 export class Player {
   constructor(name) {
     this.name = name;
@@ -15,9 +17,17 @@ export class Player {
     this._watchers = new Set();
   }
 
-  static async spawn(name) {
+  /** @param {{guest?:boolean}} opts */
+  static async spawn(name, opts = {}) {
     const p = new Player(name);
-    p.worker = new Worker(WORKER);
+    p.guest = !!opts.guest;
+    p.worker = new Worker(WORKER, {
+      workerData: {
+        guest: p.guest,
+        name,
+        sub: `${name}-${Date.now()}-${++spawnSeq}`,
+      },
+    });
     await new Promise((resolve, reject) => {
       p.worker.on('error', reject);
       p.worker.on('message', (msg) => {

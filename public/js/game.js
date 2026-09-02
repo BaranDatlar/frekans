@@ -1,27 +1,32 @@
-// Oyun akışı: mod, faz geçişleri, gizli hedef, ibreler, kilitleme, puan kaydı.
+// Oyun akışı: mod, takımlar, faz geçişleri, gizli hedef, ibreler, kilitleme, puan.
 //
 // Tasarım notu — neden sunucu kodu yok:
 //  · Tüm faz geçişleri `rooms/{kod}/state` üzerinde TEK bir transaction'dır,
 //    yani iki kişi aynı anda tetiklese bile ikinci deneme iptal olur.
-//  · Gizli veriler (hedef ve bireysel moddaki tahmin ibreleri) güvenlik
-//    kurallarıyla korunur; faz 'reveal' olduğu anda kural kendiliğinden açılır.
+//  · Gizli veriler (hedef ve tahmin ibreleri) güvenlik kurallarıyla korunur;
+//    faz 'reveal' olduğu anda kural kendiliğinden açılır.
 //  · Puan hiçbir yerde toplanmaz; her tur `history/{tur}` altına idempotent
 //    yazılır, toplam istemcide türetilir.
 //
-// İki mod:
-//  · shared — tek ortak ibre, tek ortak puan (klasik kooperatif).
-//  · solo   — herkesin kendi ibresi ve kendi puanı; psişik ortalamayı alır.
+// İki mod — ikisinde de herkesin kendi ibresi var ve psişik hepsini canlı
+// görür; fark yalnızca puanın nereye yazıldığı:
+//  · solo — herkes kendi puanını toplar, psişik tüm tahmincilerin ortalamasını.
+//  · team — puanlar takıma yazılır, psişik kendi takımdaşlarının ortalamasını.
 
 import {
   dbRef, get, set, update, remove, onValue, runTransaction, uid, serverNow,
 } from './firebase.js';
 import { state, emit, onlinePlayers } from './room.js';
-import { loadPool } from './spectrums.js';
-import { randomTarget, scoreFor, shuffle, clampValue } from './scoring.js';
+import { randomTarget, scoreFor, clampValue } from './scoring.js';
 import {
   MODE, isMode, nextPsychic, mergeOrder, pickSpectrum,
   activeGuessers, allLocked, soloScores, psychicAverage,
 } from './logic.js';
+import {
+  assignRandom, interleaveOrder, teamsBalanced, psychicTeamAverage, teamOf,
+} from './teams.js';
+import { resolveDeck } from './deck.js';
+import { BUILTIN_CARDS } from './builtin.js';
 
 const DIAL_THROTTLE_MS = 150;
 const HISTORY_FALLBACK_MS = 1400;
@@ -35,8 +40,11 @@ const round1 = (v) => Math.round(clampValue(v) * 10) / 10;
 export const phase = () => state.game?.phase ?? null;
 export const roundIndex = () => state.game?.roundIndex ?? 0;
 export const mode = () => isMode(state.game?.mode);
-export const isSolo = () => mode() === MODE.SOLO;
+export const isTeamMode = () => mode() === MODE.TEAM;
 export const isPsychic = () => !!state.game && state.game.psychicUid === uid();
+
+/** Odanın destesi (yalnızca o turun psişiği okur). */
+export const deckCards = () => resolveDeck(state.deck, BUILTIN_CARDS);
 
 /* ══════════ Lobi ══════════ */
 
@@ -58,25 +66,70 @@ export async function setMode(m) {
   });
 }
 
+/** Kendi takımını seçer. */
+export async function setMyTeam(teamId) {
+  const me = uid();
+  await runTransaction(stateRef(), (st) => {
+    if (!st || st.phase !== 'lobby') return;
+    st.teams = { ...(st.teams || {}), [me]: teamId === 'b' ? 'b' : 'a' };
+    return st;
+  });
+}
+
+/** Kurucunun "Rastgele dağıt"ı: çevrimiçi herkesi iki takıma eşit böler. */
+export async function shuffleTeams() {
+  const online = onlinePlayers().map(p => p.id);
+  const teams = assignRandom(online);
+  await runTransaction(stateRef(), (st) => {
+    if (!st || st.phase !== 'lobby') return;
+    st.teams = teams;
+    return st;
+  });
+}
+
+export function teamState() {
+  return state.game?.teams || {};
+}
+
+export function myTeam() {
+  return teamOf(teamState(), state.me);
+}
+
 export async function startGame() {
   const online = onlinePlayers().map(p => p.id);
   if (online.length < 2) throw new Error('En az 2 oyuncu gerekiyor.');
-  const order = shuffle(online);
+
+  const teams = teamState();
+  const teamMode = isTeamMode();
+  if (teamMode) {
+    const balance = teamsBalanced(teams, online);
+    if (!balance.playable) {
+      throw new Error('Takım modunda her takımda en az 2 oyuncu olmalı.');
+    }
+  }
+  // Takım modunda sıra dönüşümlü kurulur; yoksa kalabalık takım daha çok
+  // psişik sırası alıp avantaj kazanır.
+  const order = teamMode ? interleaveOrder(teams, online) : shuffleIds(online);
+
   const res = await runTransaction(stateRef(), (st) => {
     if (!st || st.phase !== 'lobby') return;
     st.phase = 'clue';
     st.roundIndex = 0;
     st.order = order;
     st.psychicUid = order[0];
-    st.drawId = null;
-    st.spectrum = null;
-    st.clue = null;
-    st.final = null;
-    st.lockDeadline = null;
-    st.dial = { value: 50, by: null, at: 0 };
+    resetRoundFields(st);
     return st;
   });
   if (res.committed) await clearRoundData();
+}
+
+function shuffleIds(ids) {
+  const a = ids.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 /** Yeni oyun: turlara göre indekslenen her şeyi sil. */
@@ -86,6 +139,13 @@ function clearRoundData() {
     remove(dbRef(path('locks'))),
     remove(dbRef(path('guesses'))),
   ]);
+}
+
+/* ══════════ Deste ══════════ */
+
+/** Odanın destesini değiştirir. Yalnızca kurucu, yalnızca lobide. */
+export async function setDeck(deck) {
+  await set(dbRef(path('deck')), deck);
 }
 
 /* ══════════ Tur açılışı (psişiğin cihazı yapar) ══════════ */
@@ -98,8 +158,8 @@ export async function ensureRoundDrawn() {
   if (!g || g.phase !== 'clue' || g.spectrum || !isPsychic() || drawing) return;
   drawing = true;
   try {
-    const pool = await loadPool();
-    if (!pool.length) throw new Error('Spektrum havuzu boş. Önce spektrum ekleyin.');
+    const pool = deckCards();
+    if (!pool.length) throw new Error('Deste boş. Lobiden başka bir deste seç.');
     const usedSnap = await get(dbRef(path('usedSpectrumIds')));
     const picked = pickSpectrum(pool, usedSnap.val() || {});
     const target = randomTarget();
@@ -120,9 +180,6 @@ export async function ensureRoundDrawn() {
         left: picked.spectrum.left,
         right: picked.spectrum.right,
       };
-      st.dial = { value: 50, by: null, at: 0 };
-      st.final = null;
-      st.lockDeadline = null;
       return st;
     });
 
@@ -153,30 +210,27 @@ export async function submitClue(text) {
 let lastSent = 0;
 let pendingValue = null;
 let flushTimer = null;
-/** Bireysel modda kendi ibrem — yazması gecikse de arayüz anında tepki versin. */
+/** Kendi ibrem — yazması gecikse de arayüz anında tepki versin. */
 let myGuessLocal = null;
 let myGuessRound = -1;
 
-/** Bireysel modda kendi ibremin bilinen değeri. */
 export function myGuess() {
   if (myGuessRound === roundIndex() && myGuessLocal != null) return myGuessLocal;
   return null;
 }
 
-/** Bu turda kendi kilidim var mı (ortak modda güncel ibreye denk geliyor mu)? */
+/** Bu turda kendi kilidim var mı? */
 export function iLocked() {
   const g = state.game;
   if (!g) return false;
-  const v = state.locks?.[g.roundIndex]?.[uid()];
-  if (typeof v !== 'number') return false;
-  if (isSolo()) return true;
-  return Math.abs(v - (g.dial?.value ?? 50)) < 0.05;
+  return Number.isFinite(state.locks?.[g.roundIndex]?.[uid()]);
 }
 
 /** Sürükleme sırasında çağrılır; saniyede ~7 yazımla sınırlanır. */
 export function pushDial(value) {
-  if (phase() !== 'guess' || iLocked()) return;
-  if (isSolo()) { myGuessLocal = value; myGuessRound = roundIndex(); }
+  if (phase() !== 'guess' || isPsychic() || iLocked()) return;
+  myGuessLocal = value;
+  myGuessRound = roundIndex();
   pendingValue = value;
   const wait = DIAL_THROTTLE_MS - (Date.now() - lastSent);
   if (wait <= 0) { flushDial(); return; }
@@ -190,31 +244,18 @@ export function flushDial() {
   const value = round1(pendingValue);
   pendingValue = null;
   lastSent = Date.now();
-  const ref = isSolo()
-    ? dbRef(path(`guesses/${roundIndex()}/${uid()}`))
-    : dbRef(path('state/dial'));
-  const payload = isSolo() ? value : { value, by: uid(), at: Date.now() };
-  return set(ref, payload)
+  return set(dbRef(path(`guesses/${roundIndex()}/${uid()}`)), value)
     .catch(() => { /* geçici bağlantı hatası: bir sonraki hareket düzeltir */ });
 }
 
 /* ══════════ Kilitleme ══════════ */
 
-/**
- * Kendi onayımı basar. Kilit, basıldığı andaki ibre DEĞERİYLE saklanır;
- * ortak modda ibre sonradan oynarsa bu onay kendiliğinden geçersizleşir.
- */
 export async function lockGuess() {
   const g = state.game;
   if (!g || g.phase !== 'guess' || isPsychic()) return false;
-  const value = round1(isSolo() ? (myGuess() ?? 50) : (g.dial?.value ?? 50));
-
-  if (isSolo()) {
-    // Kilitleyen herkesin bir ibresi olsun (hiç dokunmadıysa 50).
-    await set(dbRef(path(`guesses/${g.roundIndex}/${uid()}`)), value);
-  } else {
-    await flushDial();
-  }
+  const value = round1(myGuess() ?? 50);
+  // Kilitleyen herkesin bir ibresi olsun (hiç dokunmadıysa 50).
+  await set(dbRef(path(`guesses/${g.roundIndex}/${uid()}`)), value);
   await set(dbRef(path(`locks/${g.roundIndex}/${uid()}`)), value);
   await startCountdown();
   return true;
@@ -243,20 +284,16 @@ export function countdownLeft() {
   return Math.max(0, dl - serverNow());
 }
 
-/** Bu turda kilitlemesi beklenenler. */
 export function expectedGuessers() {
   return activeGuessers(state.players, state.game?.psychicUid);
 }
 
-/** Bu turun kilitleri. */
 export function roundLocks() {
   return state.locks?.[roundIndex()] || {};
 }
 
-/** Herkes kilitledi mi? */
 export function everyoneLocked() {
-  const dialValue = isSolo() ? null : (state.game?.dial?.value ?? 50);
-  return allLocked(roundLocks(), expectedGuessers(), dialValue);
+  return allLocked(roundLocks(), expectedGuessers());
 }
 
 /** Turu açar. Herkes kilitlediğinde veya süre dolduğunda çağrılır. */
@@ -265,9 +302,6 @@ async function revealNow() {
     if (!st || st.phase !== 'guess') return;
     st.phase = 'reveal';
     st.lockDeadline = null;
-    if (isMode(st.mode) === MODE.SHARED) {
-      st.final = st.dial && Number.isFinite(st.dial.value) ? st.dial.value : 50;
-    }
     return st;
   });
   return res.committed;
@@ -276,13 +310,9 @@ async function revealNow() {
 /* ══════════ Gizli hedef ══════════ */
 
 /**
- * Hedef önbelleği. Yalnızca TEK bir çekilişe aittir ve `drawId` ile
- * doğrulanır.
- *
- * Neden tur numarası yetmiyor: sıra atlandığında ve "Tekrar Oyna"dan sonra
- * aynı tur numarasına YENİ bir hedef çekilir. Tur numarasına dayanan önbellek
- * bu durumda bayat hedefi saklamaya devam ediyor, psişik doğru yeri görürken
- * tahminciler bambaşka bir yerde bant görüyordu.
+ * Hedef önbelleği. Yalnızca TEK bir çekilişe aittir ve `drawId` ile doğrulanır:
+ * sıra atlandığında ve "Tekrar Oyna"dan sonra aynı tur numarasına YENİ bir
+ * hedef çekilir, tur numarasına dayanan önbellek bayat kalırdı.
  */
 let cachedTarget = null;   // { code, round, drawId, value }
 
@@ -330,7 +360,7 @@ export async function fetchTarget() {
   }
 }
 
-/* ══════════ Bireysel moddaki tahmin ibreleri ══════════ */
+/* ══════════ Tahmin ibreleri ══════════ */
 
 let feedUnsub = null;
 let feedKey = null;
@@ -342,7 +372,7 @@ let feedData = {};
  */
 function syncGuessFeed() {
   const g = state.game;
-  const want = !!g && isSolo() && isPsychic() && g.phase === 'guess';
+  const want = !!g && isPsychic() && g.phase === 'guess';
   const key = want ? `${state.code}:${g.roundIndex}` : null;
   if (key === feedKey) return;
 
@@ -358,13 +388,12 @@ function syncGuessFeed() {
 }
 
 /**
- * Kadranda gösterilecek tahmin ibreleri.
- * Açılışta history'den (herkeste aynı), tahmin fazında psişiğin canlı
- * akışından, diğer durumlarda yalnızca kendi ibrem.
+ * Kadranda gösterilecek tahmin ibreleri: açılışta history'den (herkeste aynı),
+ * tahmin fazında psişiğin canlı akışından, diğer durumlarda yalnızca kendi ibrem.
  */
 export function visibleGuesses() {
   const g = state.game;
-  if (!g || !isSolo()) return {};
+  if (!g) return {};
   if (g.phase === 'reveal') {
     const h = state.history?.[g.roundIndex];
     if (h?.guesses) return h.guesses;
@@ -377,9 +406,9 @@ export function visibleGuesses() {
 /* ══════════ Tur sonucu ══════════ */
 
 /**
- * Tur sonucunu `history/{tur}` altına yazar. İçerik deterministiktir
- * (aynı hedef, aynı ibreler → aynı puanlar), bu yüzden hangi cihaz yazarsa
- * yazsın sonuç aynıdır ve iki kez yazılması zararsızdır.
+ * Tur sonucunu `history/{tur}` altına yazar. İçerik deterministiktir (aynı
+ * hedef, aynı ibreler → aynı puanlar), bu yüzden hangi cihaz yazarsa yazsın
+ * sonuç aynıdır ve iki kez yazılması zararsızdır.
  */
 export async function writeHistory(target) {
   const g = state.game;
@@ -387,7 +416,14 @@ export async function writeHistory(target) {
   const idx = g.roundIndex;
   if (state.history?.[idx]) return;
 
-  const base = {
+  // Faz 'reveal' olduğu için kural gereği artık herkes okuyabilir. Yazma ise
+  // yalnızca 'guess' fazında mümkün, yani liste artık sabit.
+  const snap = await get(dbRef(path(`guesses/${idx}`)));
+  const guesses = snap.val() || {};
+  const points = soloScores(target, guesses);
+  const teams = teamState();
+
+  const entry = {
     clue: g.clue ?? '',
     left: g.spectrum?.left ?? '',
     right: g.spectrum?.right ?? '',
@@ -395,27 +431,22 @@ export async function writeHistory(target) {
     psychicUid: g.psychicUid ?? '',
     mode: mode(),
     target,
+    guesses,
+    points,
+    psychicPoints: isTeamMode()
+      ? psychicTeamAverage(points, teams, g.psychicUid)
+      : psychicAverage(points),
   };
-
-  let entry;
-  if (isSolo()) {
-    // Faz 'reveal' olduğu için kural gereği artık herkes okuyabilir.
-    // Yazma ise yalnızca 'guess' fazında mümkün, yani liste artık sabit.
-    const snap = await get(dbRef(path(`guesses/${idx}`)));
-    const guesses = snap.val() || {};
-    const points = soloScores(target, guesses);
-    entry = { ...base, guesses, points, psychicPoints: psychicAverage(points) };
-  } else {
-    const dial = Number.isFinite(g.final) ? g.final : 50;
-    entry = { ...base, dial, points: scoreFor(target, dial) };
-  }
+  // Takım dağılımını turla birlikte sakla: biri sonradan takım değiştirse
+  // bile geçmiş turların puanı kaymaz.
+  if (isTeamMode()) entry.teams = teams;
 
   await set(dbRef(path(`history/${idx}`)), entry)
     .catch(() => { /* başka cihaz yazmış olabilir */ });
 }
 
 let fallbackTimer = null;
-/** Kilitleyen cihaz kopmuşsa kaydı bir başkası tamamlasın. */
+/** Turu açan cihaz kopmuşsa kaydı bir başkası tamamlasın. */
 export function scheduleHistoryFallback() {
   if (fallbackTimer) return;
   fallbackTimer = setTimeout(async () => {
@@ -433,9 +464,20 @@ function resetRoundFields(st) {
   st.drawId = null;
   st.spectrum = null;
   st.clue = null;
-  st.final = null;
   st.lockDeadline = null;
-  st.dial = { value: 50, by: null, at: 0 };
+}
+
+/** Oyun başladıktan sonra katılanlara da takım ver ki puanları sayılsın. */
+function fillMissingTeams(st, online) {
+  if (isMode(st.mode) !== MODE.TEAM) return;
+  const teams = { ...(st.teams || {}) };
+  let a = 0, b = 0;
+  for (const t of Object.values(teams)) { if (t === 'a') a++; else if (t === 'b') b++; }
+  for (const id of online) {
+    if (teams[id] === 'a' || teams[id] === 'b') continue;
+    if (a <= b) { teams[id] = 'a'; a++; } else { teams[id] = 'b'; b++; }
+  }
+  st.teams = teams;
 }
 
 /** Sonraki tura geçer; turlar bittiyse oyunu bitirir. */
@@ -449,6 +491,7 @@ export async function nextRound() {
     st.roundIndex = idx;
     st.order = order;
     st.psychicUid = nextPsychic(order, st.psychicUid, online);
+    fillMissingTeams(st, online);
     resetRoundFields(st);
     st.phase = 'clue';
     return st;
@@ -463,6 +506,7 @@ export async function skipPsychic() {
     const order = mergeOrder(st.order, online);
     st.order = order;
     st.psychicUid = nextPsychic(order, st.psychicUid, online);
+    fillMissingTeams(st, online);
     resetRoundFields(st);
     return st;
   });
@@ -497,12 +541,9 @@ const MAX_PASSES = 6;
  * Duruma bakıp o an gereken yazımları yapar. Her durum değişiminde çağrılır.
  * Arayüzden bağımsızdır; uçtan uca testler de bunu çalıştırır.
  *
- * Yeniden giriş: bir geçiş sürerken gelen durum değişimi ATILMAZ, sonunda
- * bir geçiş daha yapılır. Yoksa kendi yazdığımız faz değişimi (ör. turun
- * açılması) meşgulken gelir ve ardından yapılması gereken iş (sonucu
- * kaydetmek) hiç tetiklenmez.
- *
- * @returns {Promise<{changed:boolean, error?:string}>}
+ * Yeniden giriş: bir geçiş sürerken gelen durum değişimi ATILMAZ, sonunda bir
+ * geçiş daha yapılır. Yoksa kendi yazdığımız faz değişimi (ör. turun açılması)
+ * meşgulken gelir ve ardından yapılması gereken iş hiç tetiklenmez.
  */
 export async function runSideEffects() {
   if (effectBusy) { effectAgain = true; return { changed: false }; }

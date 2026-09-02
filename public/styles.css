@@ -18,6 +18,10 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
+/* Tarayıcının [hidden] kuralı sınıflardaki display'i yenemiyor; .btn ve .field
+   gibi display tanımlayan her sınıfta hidden işe yaramaz hale geliyordu. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;
@@ -325,3 +329,56 @@ input[type=range] { accent-color: var(--accent); height: var(--tap); }
 .rank-list .pts[data-p="0"] { color: #5a6478; }
 
 .icon-btn.armed { background: #4a2230; color: #ff9a9a; }
+
+/* ══════════ Giriş ekranı ══════════ */
+.btn.provider {
+  background: #fff; color: #1f2328; border-color: #fff; font-weight: 600;
+}
+.btn.provider .gicon { width: 20px; height: 20px; flex-shrink: 0; }
+#btn-apple { background: #000; color: #fff; border-color: #333; }
+.fineprint {
+  color: #6b7688; font-size: 12.5px; line-height: 1.6; margin: 4px 0 0; text-align: center;
+}
+
+.account-row {
+  display: flex; align-items: center; gap: 10px; justify-content: center;
+  margin-top: 6px; color: var(--muted); font-size: 13px;
+}
+.account-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ══════════ Takım seçimi ══════════ */
+.team-picker { display: flex; gap: 10px; }
+.team-card {
+  flex: 1; min-width: 0; text-align: left; padding: 12px;
+  border-radius: var(--radius); border: 2px solid var(--line);
+  background: var(--bg-soft); color: var(--text); font-family: inherit; cursor: pointer;
+}
+.team-card b { display: block; font-size: 15px; margin-bottom: 6px; }
+.team-card ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.team-card li { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.team-card li.me { color: var(--text); font-weight: 600; }
+.team-card .empty-slot { color: #55607480; font-style: italic; }
+.team-card[aria-pressed="true"] { background: #1b2334; }
+.team-card:disabled { cursor: default; }
+
+.select {
+  width: 100%; min-height: var(--tap); background: var(--bg-soft);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  color: var(--text); font-size: 16px; padding: 0 12px; font-family: inherit;
+}
+
+/* ══════════ Takım skorları ══════════ */
+.team-score-row { display: flex; gap: 10px; }
+.team-score {
+  flex: 1; border-radius: var(--radius); border: 2px solid var(--line);
+  background: var(--bg-card); padding: 16px 12px; text-align: center;
+}
+.team-score .nm { font-size: 14px; font-weight: 600; }
+.team-score .pts { font-size: 40px; font-weight: 800; line-height: 1.1; }
+.team-score.win { border-color: var(--accent); }
+.team-score.win .nm::after { content: ' 🏆'; }
+
+.team-tag {
+  font-size: 11px; padding: 2px 7px; border-radius: 999px;
+  border: 1px solid currentColor; opacity: .85;
+}

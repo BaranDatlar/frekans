@@ -26,6 +26,33 @@
 
 <div id="app">
 
+  <!-- ══════════════ GİRİŞ ══════════════ -->
+  <section class="screen" id="screen-login">
+    <div class="stack center">
+      <h1 class="logo">Frekans</h1>
+      <p class="tagline">Aynı dalga boyunda mısınız?</p>
+
+      <button class="btn provider" id="btn-google">
+        <svg class="gicon" viewBox="0 0 48 48" aria-hidden="true">
+          <path fill="#4285F4" d="M45 24c0-1.6-.1-2.7-.4-3.9H24v7.1h12c-.2 1.9-1.5 4.7-4.4 6.6l6.7 5.2C42.2 35.5 45 30.3 45 24z"/>
+          <path fill="#34A853" d="M24 46c5.9 0 10.9-2 14.5-5.3l-6.9-5.4c-1.9 1.3-4.4 2.2-7.6 2.2-5.8 0-10.7-3.8-12.5-9.1l-7.1 5.5C8.1 41.1 15.5 46 24 46z"/>
+          <path fill="#FBBC05" d="M11.5 28.4c-.5-1.4-.8-2.9-.8-4.4s.3-3 .7-4.4l-7.1-5.5C2.9 17 2 20.4 2 24s.9 7 2.4 9.9l7.1-5.5z"/>
+          <path fill="#EA4335" d="M24 10.6c4.1 0 6.9 1.8 8.5 3.3l6.2-6C34.9 4.5 29.9 2 24 2 15.5 2 8.1 6.9 4.4 14.1l7.1 5.5C13.3 14.4 18.2 10.6 24 10.6z"/>
+        </svg>
+        Google ile devam et
+      </button>
+
+      <button class="btn provider" id="btn-apple" hidden>Apple ile devam et</button>
+
+      <button class="btn ghost" id="btn-guest">Misafir olarak gir</button>
+      <p class="hint" id="login-status"></p>
+      <p class="fineprint">
+        Misafir olarak odalara katılıp oynayabilirsin.
+        Oda kurmak ve kendi spektrum setlerini kaydetmek için giriş gerekiyor.
+      </p>
+    </div>
+  </section>
+
   <!-- ══════════════ AÇILIŞ ══════════════ -->
   <section class="screen" id="screen-home">
     <div class="stack center">
@@ -45,8 +72,13 @@
         <button class="btn" id="btn-join">Katıl</button>
       </div>
 
-      <button class="btn ghost" id="btn-open-spectrums">Spektrumlar</button>
+      <button class="btn ghost" id="btn-open-packs">Setlerim</button>
       <p class="hint" id="home-status"></p>
+
+      <div class="account-row">
+        <span id="account-label"></span>
+        <button class="btn small ghost" id="btn-signout">Çıkış</button>
+      </div>
     </div>
   </section>
 
@@ -71,16 +103,40 @@
       <div class="field">
         <span>Mod</span>
         <div class="mode-picker" id="mode-picker">
-          <button class="mode-opt" type="button" data-mode="shared">
-            <b>Ortak Kadran</b>
-            <small>Tek ibre, tek ortak puan. Klasik Wavelength.</small>
-          </button>
           <button class="mode-opt" type="button" data-mode="solo">
-            <b>Herkes Kendi Kadranı</b>
-            <small>Herkes kendi tahminini yapar, kendi puanını alır. Psişik ortalamayı alır.</small>
+            <b>Bireysel</b>
+            <small>Herkes kendi tahminini yapar, kendi puanını alır. Sonunda kişi sıralaması.</small>
+          </button>
+          <button class="mode-opt" type="button" data-mode="team">
+            <b>Takım</b>
+            <small>Aynı oynanış, puanlar takımlara yazılır. Sonunda kazanan takım.</small>
           </button>
         </div>
       </div>
+
+      <div class="field" id="teams-field" hidden>
+        <span>Takımlar</span>
+        <div class="team-picker" id="team-picker"></div>
+        <button class="btn small ghost" id="btn-shuffle-teams" hidden>Rastgele dağıt</button>
+      </div>
+
+      <div class="field" id="deck-field" hidden>
+        <span>Deste</span>
+        <div class="mode-picker" id="deck-picker">
+          <button class="mode-opt" type="button" data-deck="builtin">
+            <b>Hazır set</b><small>Uygulamayla gelen 86 kart.</small>
+          </button>
+          <button class="mode-opt" type="button" data-deck="custom">
+            <b>Kendi setim</b><small>Yalnızca seçtiğin setteki kartlar çıkar.</small>
+          </button>
+          <button class="mode-opt" type="button" data-deck="mixed">
+            <b>Karışık</b><small>Hazır kartlar + seçtiğin set.</small>
+          </button>
+        </div>
+        <select id="deck-pack" class="select" hidden></select>
+      </div>
+
+      <p class="hint" id="deck-info"></p>
 
       <label class="field">
         <span>Tur sayısı <b id="rounds-value">10</b></span>
@@ -88,7 +144,7 @@
       </label>
 
       <button class="btn primary" id="btn-start">Oyunu Başlat</button>
-      <button class="btn ghost small" id="btn-lobby-spectrums">Spektrumlar</button>
+      <button class="btn ghost small" id="btn-lobby-packs">Setlerim</button>
       <p class="hint" id="lobby-hint"></p>
     </div>
   </section>
@@ -129,6 +185,8 @@
         <h2 id="over-title">—</h2>
         <p id="over-note"></p>
       </div>
+      <div class="team-score-row" id="over-teams" hidden></div>
+
       <h2 class="section-title" id="over-rank-title" hidden>Sıralama</h2>
       <ul class="rank-list" id="over-rank" hidden></ul>
 
@@ -138,31 +196,47 @@
     </div>
   </section>
 
-  <!-- ══════════════ SPEKTRUM EDİTÖRÜ ══════════════ -->
-  <section class="screen" id="screen-spectrums">
+  <!-- ══════════════ SETLERİM ══════════════ -->
+  <section class="screen" id="screen-packs">
     <header class="topbar">
-      <button class="icon-btn" id="btn-close-spectrums" title="Geri">←</button>
-      <span class="topbar-title">Spektrumlar <span class="count" id="spec-count"></span></span>
+      <button class="icon-btn" id="btn-close-packs" title="Geri">←</button>
+      <span class="topbar-title" id="packs-title">Setlerim</span>
       <span class="spacer"></span>
     </header>
 
-    <div class="stack">
-      <form class="spec-form" id="spec-form">
-        <input id="spec-in-left" type="text" maxlength="28" placeholder="Soğuk" required>
-        <span class="arrows">↔</span>
-        <input id="spec-in-right" type="text" maxlength="28" placeholder="Sıcak" required>
-        <button class="btn small primary" type="submit">Ekle</button>
-      </form>
-      <p class="hint" id="spec-status"></p>
-
+    <!-- liste görünümü -->
+    <div class="stack" id="packs-list-view">
+      <p class="hint" id="packs-status"></p>
+      <ul class="spec-list" id="packs-list"></ul>
       <div class="row">
-        <button class="btn small ghost" id="btn-spec-export">JSON indir</button>
-        <button class="btn small ghost" id="btn-spec-import">JSON yükle</button>
-        <input id="spec-file" type="file" accept="application/json,.json" hidden>
+        <button class="btn small primary" id="btn-pack-new">Yeni set</button>
+        <button class="btn small ghost" id="btn-pack-import">JSON yükle</button>
+        <input id="pack-file" type="file" accept="application/json,.json" hidden>
       </div>
+    </div>
 
-      <input id="spec-search" class="search" type="search" placeholder="Ara…">
-      <ul class="spec-list" id="spec-list"></ul>
+    <!-- düzenleme görünümü -->
+    <div class="stack" id="packs-edit-view" hidden>
+      <label class="field">
+        <span>Set adı</span>
+        <input id="pack-name" type="text" maxlength="32" placeholder="Ofis espirileri">
+      </label>
+
+      <form class="spec-form" id="card-form">
+        <input id="card-left" type="text" maxlength="28" placeholder="Soğuk" required>
+        <span class="arrows">↔</span>
+        <input id="card-right" type="text" maxlength="28" placeholder="Sıcak" required>
+        <button class="btn small primary" type="submit">Kart ekle</button>
+      </form>
+      <p class="hint" id="pack-status"></p>
+
+      <ul class="spec-list" id="card-list"></ul>
+
+      <button class="btn primary wide" id="btn-pack-save">Seti kaydet</button>
+      <div class="row">
+        <button class="btn small ghost" id="btn-pack-export">JSON indir</button>
+        <button class="btn small ghost danger" id="btn-pack-delete">Seti sil</button>
+      </div>
     </div>
   </section>
 

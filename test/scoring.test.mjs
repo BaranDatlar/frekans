@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BAND, HALF_TARGET, MIN_TARGET, MAX_TARGET,
-  randomTarget, bandsFor, scoreFor, clampValue, verdict, shuffle,
+  randomTarget, bandsFor, scoreFor, clampValue, shuffle,
 } from '../public/js/scoring.js';
 
 test('hedef her zaman kenardan taşmayacak aralıkta üretilir', () => {
@@ -81,14 +81,6 @@ test('clampValue', () => {
   assert.equal(clampValue(42.5), 42.5);
   assert.equal(clampValue(NaN), 50);
   assert.equal(clampValue(undefined), 50);
-});
-
-test('verdict sınırları', () => {
-  assert.equal(verdict(40, 10).title, 'Aynı frekanstasınız');
-  assert.equal(verdict(36, 10).title, 'Aynı frekanstasınız');
-  assert.equal(verdict(35, 10).title, 'Çok iyi anlaşıyorsunuz');
-  assert.equal(verdict(0, 10).title, 'Farklı frekanslardasınız');
-  assert.equal(verdict(0, 0).title, 'Farklı frekanslardasınız', 'sıfır tura bölme hatası olmamalı');
 });
 
 test('shuffle elemanları korur', () => {

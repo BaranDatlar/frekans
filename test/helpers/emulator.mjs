@@ -2,7 +2,10 @@
 // aynı süreçte birden fazla "oyuncu" oluşturabilelim.
 
 import { initializeApp, deleteApp } from 'firebase/app';
-import { getAuth, signInAnonymously, connectAuthEmulator } from 'firebase/auth';
+import {
+  getAuth, signInAnonymously, signInWithCredential, GoogleAuthProvider,
+  connectAuthEmulator,
+} from 'firebase/auth';
 import { getDatabase, connectDatabaseEmulator, ref, get, set, update, remove } from 'firebase/database';
 
 export const CONFIG = {
@@ -34,16 +37,31 @@ export async function emulatorUp() {
 
 let seq = 0;
 
-/** Kendi anonim kullanıcısı olan bağımsız bir istemci. */
-export async function makeClient(label = `c${++seq}`) {
+/**
+ * Bağımsız bir test istemcisi.
+ * Varsayılan olarak Google ile girmiş sayılır (Auth emülatörü imzasız kimlik
+ * belirtecini kabul eder). `guest: true` ile anonim oturum açılır — misafir
+ * kısıtlarını sınamak için.
+ */
+export async function makeClient(label = `c${++seq}`, { guest = false, sub } = {}) {
   const app = initializeApp(CONFIG, `test-${label}-${Date.now()}-${++seq}`);
   const auth = getAuth(app);
   connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
   const db = getDatabase(app);
   connectDatabaseEmulator(db, DB_HOST, DB_PORT);
-  const cred = await signInAnonymously(auth);
+
+  const cred = guest
+    ? await signInAnonymously(auth)
+    : await signInWithCredential(auth, GoogleAuthProvider.credential(JSON.stringify({
+        sub: sub || `test-${label}-${Date.now()}-${seq}`,
+        email: `${label}${seq}@ornek.com`,
+        email_verified: true,
+        name: label,
+      })));
+
   return {
     label,
+    guest,
     uid: cred.user.uid,
     db,
     ref: (p) => ref(db, p),

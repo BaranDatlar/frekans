@@ -6,10 +6,11 @@
 grubu için web klonu. Herkes kendi telefonundan girer, spektrum kartlarını
 kendiniz yazarsınız.
 
-- **İki mod:** ortak kadranla kooperatif ya da herkesin kendi kadranı olduğu
-  bireysel puanlı mod. Takım yok; sırayla biri psişik olur.
-- **Kendi spektrumlarınız:** "Soğuk ↔ Sıcak" gibi kartları uygulama içinden
-  ekleyip silersiniz; havuz ortaktır, oyunda rastgele gelir.
+- **İki mod:** herkesin kendi puanını topladığı **bireysel**, ya da puanların
+  takımlara yazıldığı **takım** modu.
+- **Kendi kart setleriniz:** "Soğuk ↔ Sıcak" gibi kartlardan kendi setinizi
+  oluşturup lobide desteye yüklersiniz. 86 hazır kart uygulamayla gelir.
+- **Google ile giriş** ya da misafir olarak katılma.
 - **Kurulum yok:** bir bağlantı gönderirsiniz, tarayıcıdan oynanır.
 
 ---
@@ -22,10 +23,10 @@ Her tur:
    üzerinde **sadece onun gördüğü** bir hedef bölgesi belirir.
 2. Psişik, hedefin nerede olduğunu anlatan **tek bir ipucu** yazar
    ("ılık çorba"). Sonra susar — yüzde, sayı, yön söylemek yasak.
-3. Diğerleri ibreyi çevirir (moda göre ortak ya da kendi kadranlarında).
-4. **Herkes** kilitleyince hedef açılır. İlk kilitten sonra 20 saniyelik bir
-   geri sayım başlar; süre biterse tur kendiliğinden açılır, kimse beklemede
-   kalmaz.
+3. **Herkes kendi kadranını** çevirir. Tahminciler birbirinin ibresini
+   göremez; psişik hepsini canlı görür.
+4. **Herkes** kilitleyince hedef açılır. İlk kilitten sonra 20 saniyelik geri
+   sayım başlar; süre biterse tur kendiliğinden açılır, kimse beklemede kalmaz.
 
 **Puan** — hedef merkezine yakınlığa göre:
 
@@ -42,17 +43,49 @@ ayarlanır (3–20).
 
 Lobide odayı kuran kişi seçer.
 
-**Ortak Kadran** — klasik kooperatif. Tek bir ibre vardır, herkes çevirebilir,
-sesli tartışılır. Tur puanı ortak havuza yazılır, sonunda tek bir değerlendirme
-çıkar. Biri ibreyi oynatırsa daha önce basılmış onaylar düşer, çünkü onay
-basıldığı andaki ibre değerine bağlıdır — kimse görmediği bir konumu
-onaylamış olmaz.
+**Bireysel** — herkes kendi puanını toplar. Psişik, tüm tahmincilerin puan
+ortalamasını alır. Sonunda kişi başı sıralama çıkar.
 
-**Herkes Kendi Kadranı** — herkesin ayrı ibresi ve ayrı puanı vardır.
-Tahminciler birbirinin ibresini **göremez** (bunu güvenlik kuralı zorlar),
-psişik ise hepsini canlı görür. Açılışta bütün ibreler kadranda belirir.
-Psişik, tahmincilerin puan **ortalamasını** alır — yani ne kadar çok kişiye
-iyi anlattıysa o kadar kazanır. Oyun sonunda kişi başı sıralama çıkar.
+**Takım** — iki takım (Mavi / Turuncu). Oynanış birebir aynı, tek fark
+puanların takıma yazılması:
+
+- Tahmincinin puanı → kendi takımına
+- Psişiğin puanı = **kendi takımdaşlarının** ortalaması → takımına.
+  Rakibin iyi bilmesi psişiğe yaramaz, yarışma mantığı böyle korunur.
+
+Herkes lobide kendi takımını seçer; kurucu "Rastgele dağıt" ile eşit
+bölebilir. Her takımda en az 2 kişi gerekir. Psişik sırası iki takım arasında
+**dönüşümlü** ilerler, yoksa kalabalık takım daha çok sıra alıp avantaj kazanır.
+
+### Kart setleri
+
+86 hazır kart uygulamayla gelir (`public/js/builtin.js`) — veritabanında
+değildir, kimse silemez.
+
+Google ile giren herkes **Setlerim**'den kendi setlerini oluşturur; setler
+hesaba kaydedilir, cihaz değişince kaybolmaz. Lobide **yalnızca odayı kuran**
+kişi desteyi seçer:
+
+| Seçenek | Ne çıkar |
+|---|---|
+| Hazır set | Uygulamayla gelen 86 kart |
+| Kendi setim | Yalnızca seçilen setteki kartlar |
+| Karışık | Hazır kartlar + seçilen set |
+
+Seçilen deste odaya yazılır, herkes aynı desteden oynar.
+
+### Giriş ve odalar
+
+**Google ile giriş** oda kurmayı ve set kaydetmeyi açar. **Misafir** olarak
+girenler odalara katılıp oynayabilir ama oda kuramaz, set kaydedemez — bu
+kısıt yalnızca arayüzde değil, güvenlik kurallarında da uygulanır.
+
+Misafirken Google'a geçersen **aynı kimlik korunur**: oyunun ortasında
+odandan düşmezsin.
+
+Odayı kuran çıkınca oda kapanır ve silinir. Her oda ayrıca **24 saat**
+sonra sona erer: süresi dolmuş odaya girilemez ve uygulamayı açan ilk kişi
+onu veritabanından siler.
 
 ---
 
@@ -72,8 +105,12 @@ sıfırdan yeni bir kurulum yapacaksan gerekir.
 
 1. <https://console.firebase.google.com> → **Proje ekle** (Google Cloud kullanım
    şartlarını ilk kez burada kabul edersin). Analytics'e gerek yok.
-2. **Build → Authentication → Başla → Sign-in method → Anonymous** → etkinleştir.
-   *(Bu adım komut satırından yapılamıyor.)*
+2. **Build → Authentication → Sign-in method** → şu ikisini etkinleştir:
+   - **Google** (destek e-postası seçilir) — oda kurmak ve set kaydetmek için
+   - **Anonymous** — "Misafir olarak gir" için
+
+   *(İkisi de komut satırından açılamıyor; Google için OAuth istemcisi
+   gerektiği için API de reddediyor.)*
 3. Realtime Database'i oluştur. Konsoldaki sihirbaz takılırsa yönetim API'sinden
    de oluşturulabilir:
 
@@ -132,17 +169,20 @@ Emülatör Java gerektirir (`java -version` ile kontrol et).
 | Dosya | Kapsam |
 |---|---|
 | `test/scoring.test.mjs` | Puanlama matematiği, bant sınırları, hedef üretimi |
-| `test/logic.test.mjs` | Sıra devri, oyuncu ekleme, kart seçimi |
-| `test/rules.test.mjs` | **Güvenlik kuralları** — hedefi ve tahmin ibrelerini kimin okuyabildiği |
-| `test/e2e.test.mjs` | Üç worker, gerçek `room.js`/`game.js`, tam oyun |
-| `test/ui.test.mjs` | Üç Chrome bağlamı; kadran, senkron, iki mod, ekranlar |
+| `test/logic.test.mjs` | Sıra devri, kilitleme, bireysel puanlama |
+| `test/teams.test.mjs` | Takım dağıtımı, dönüşümlü sıra, takım toplamları |
+| `test/deck.test.mjs` | Deste çözümü, set doğrulama, oda ömrü |
+| `test/rules.test.mjs` | **Güvenlik kuralları** — hedef, ibreler, setler, oda ömrü |
+| `test/e2e.test.mjs` | Ayrı worker'lar, gerçek modüller, iki mod, misafir, deste |
+| `test/ui.test.mjs` | Ayrı Chrome bağlamları; giriş, setler, takımlar, kadran |
 
 `scripts/live-smoke.mjs` (`npm run smoke`) bunlardan ayrıdır: **canlı yayında**
 gerçekten bir tur oynar, dolayısıyla üretim veritabanına yazar. Deploy sonrası
 doğrulama içindir.
 
-İlk ikisi emülatörsüz çalışır (`npm run test:unit`); diğerleri emülatör
-kapalıysa atlanır.
+İlk dördü emülatörsüz çalışır; diğerleri emülatör kapalıysa atlanır.
+Google girişi testlerde Auth emülatörünün imzasız kimlik belirteci desteğiyle
+yapılır — gerçek Google popup'ı otomatikleştirilmez.
 
 > Testler seri çalışır (`--test-concurrency=1`), çünkü hepsi aynı emülatör
 > veritabanını kullanır.
@@ -179,33 +219,47 @@ yoksa ibre elinin altından geri zıplar.
 ### Veri modeli
 
 ```
-spectrums/{id}          { left, right, addedBy, createdAt }   ortak havuz
+public/js/builtin.js            86 hazır kart (uygulamayla gelir)
 
-rooms/{KOD}/
-  meta/createdAt
+/users/{uid}/
+  profile: { name, updatedAt }
+  packs/{setId}: { name, updatedAt, cards: [{l, r}] }    yalnızca sahibi
+
+/roomIndex/{KOD}: expiresAt     süresi dolmuşları bulmak için
+
+/rooms/{KOD}/
+  meta:  { createdAt, expiresAt, hostUid }               yazma: hesap gerekir
+  deck:  { source, name?, cards? }                       yazma: kurucu, lobide
+  state: { phase, mode, teams, roundIndex, totalRounds, order,
+           psychicUid, drawId, spectrum, clue, lockDeadline }
   players/{uid}         { name, online, joinedAt }
-  state                 { phase, mode, roundIndex, totalRounds, order,
-                          psychicUid, spectrum, clue, dial, final,
-                          lockDeadline }
   secret/target         korumalı: yalnızca psişik, açılışta herkes
   guesses/{tur}/{uid}   korumalı: sahibi + psişik, açılışta herkes
   locks/{tur}/{uid}     kilitlenen ibre değeri (herkese açık)
   history/{tur}         { clue, left, right, target, psychicUid, mode,
-                          dial+points | guesses+points+psychicPoints }
+                          guesses, points, psychicPoints, teams }
   usedSpectrumIds/{id}
 ```
+
+`history` her turun **takım dağılımını** de saklar: biri sonradan takım
+değiştirse bile geçmiş turların puanı kaymaz ve her cihaz aynı toplamı bulur.
 
 ### Dosyalar
 
 ```
 public/js/
-  scoring.js     saf matematik: hedef, bantlar, puan       (test edilir)
-  logic.js       saf akış: sıra devri, kart seçimi         (test edilir)
-  firebase.js    SDK kurulumu, anonim giriş, emülatör anahtarı
-  room.js        oda kur/katıl, presence, abonelikler
-  game.js        faz geçişleri, gizli hedef, ibre, sonuç
-  dial.js        SVG kadran + sürükleme
-  ui.js          ekran yönlendirme, lobi/sonuç/editör çizimi
+  scoring.js     saf matematik: hedef, bantlar, puan        (test edilir)
+  logic.js       saf akış: sıra devri, kilit, bireysel puan (test edilir)
+  teams.js       saf takım mantığı: dağıtım, sıra, toplam   (test edilir)
+  deck.js        saf deste/set mantığı ve doğrulama         (test edilir)
+  builtin.js     86 hazır kart
+  firebase.js    SDK kurulumu, emülatör anahtarı
+  auth.js        giriş kapısı: Google, misafir, misafir yükseltme
+  packs.js       kişisel setler (hesap senkronu + cihaz önbelleği)
+  room.js        oda kur/katıl, presence, ömür, süpürücü
+  game.js        mod, takımlar, faz geçişleri, gizli hedef, sonuç
+  dial.js        SVG kadran + sürükleme + çoklu ibre
+  ui.js          ekran yönlendirme, lobi/sonuç/set çizimi
   main.js        kablolama ve oyun sahnesi
   app.js         ince başlatıcı (ayar eksikse anlaşılır hata)
 ```
@@ -234,7 +288,11 @@ oyun kilitlenmesin diye başlatma yetkisi geçici olarak en erken katılan
 - Kurucusu kapatmadan terk edilen odalar veritabanında kalır (birkaç KB).
   24 saatten eski bir oda kodu yeniden kullanılırken otomatik temizlenir.
 - Sesli iletişim uygulamada yok — oyun zaten konuşarak oynanıyor.
-- **Adresi bilen herkes oynayabilir.** Kayıt yok, anonim giriş var; spektrum
-  havuzu ortaktır ve giren herkes ekleyip silebilir, 4 harfli oda kodunu bilen
-  odaya katılabilir. Arkadaş grubu için kasıtlı bir tercih — halka açık bir
-  yerde paylaşacaksan uygun değil.
+- 4 harfli oda kodunu bilen odaya katılabilir (misafir olarak da). Odalar
+  24 saatte kapandığı için kodun ömrü sınırlı.
+- Odadaki oyuncular oyun durumunu (faz, takımlar, tur) yazabilir; güven düzeyi
+  odanın geri kalanıyla aynıdır. Gizli olan hedef ve tahmin ibreleridir, onlar
+  kural düzeyinde korunur.
+- Apple ile giriş kodu hazır ama kapalı: `public/js/auth.js` içindeki
+  `PROVIDERS.apple` bayrağı, Apple Developer hesabı alınıp Firebase'de
+  sağlayıcı açıldığında `true` yapılır.

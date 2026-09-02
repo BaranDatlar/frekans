@@ -3,15 +3,19 @@
 
 import { scoreFor } from './scoring.js';
 
-/** İki oyun modu. */
+/**
+ * İki oyun modu. İkisinde de herkesin kendi ibresi vardır ve psişik hepsini
+ * canlı görür; fark yalnızca puanların nereye yazıldığıdır.
+ */
 export const MODE = {
-  /** Tek ortak ibre, tek ortak puan. Klasik kooperatif. */
-  SHARED: 'shared',
-  /** Herkesin kendi ibresi ve kendi puanı; psişik ortalamayı alır. */
+  /** Herkes kendi puanını toplar; psişik tüm tahmincilerin ortalamasını alır. */
   SOLO: 'solo',
+  /** Puanlar takımlara yazılır; psişik kendi takımdaşlarının ortalamasını alır. */
+  TEAM: 'team',
 };
 
-export const isMode = (m) => m === MODE.SOLO ? MODE.SOLO : MODE.SHARED;
+/** Bilinmeyen/eski değerler (ör. kaldırılan 'shared') bireysele düşer. */
+export const isMode = (m) => (m === MODE.TEAM ? MODE.TEAM : MODE.SOLO);
 
 /**
  * Sıradaki psişik: `order` içinde mevcut psişikten sonraki ilk ÇEVRİMİÇİ oyuncu.
@@ -47,10 +51,6 @@ export function historyList(history) {
     .sort((a, b) => a.index - b.index);
 }
 
-export function totalScore(history) {
-  return historyList(history).reduce((sum, h) => sum + (Number(h.points) || 0), 0);
-}
-
 /**
  * Turda kullanılacak spektrumu seçer. Daha önce çıkanlar elenir;
  * hepsi tükendiyse liste sıfırlanmış sayılır.
@@ -79,32 +79,22 @@ export function activeGuessers(players, psychicUid) {
 }
 
 /**
- * Bu turda kilitlemiş oyuncular.
- *
- * Kilit, basıldığı andaki ibre DEĞERİYLE saklanır. Ortak modda `dialValue`
- * verildiğinde yalnızca o değere denk gelen kilitler sayılır — yani biri
- * ibreyi oynattığında eski onaylar kendiliğinden geçersizleşir. Böylece
- * "A 50'yi onaylamıştı ama tur 80'de kapandı" durumu oluşmaz ve kilitleri
- * silmek için kimsenin başkasının verisine yazması gerekmez.
+ * Bu turda kilitlemiş oyuncular. Kilit, basıldığı andaki ibre değeriyle
+ * saklanır; herkes kendi ibresini kilitlediği için değerin doğrulanmasına
+ * gerek yoktur, varlığı yeterlidir.
  *
  * @param {Record<string, number>} roundLocks uid -> kilitlenen ibre değeri
  * @param {string[]} guesserIds beklenen oyuncular
- * @param {number|null} dialValue ortak modda güncel ibre; bireysel modda null
  */
-export function lockedGuessers(roundLocks, guesserIds, dialValue = null) {
+export function lockedGuessers(roundLocks, guesserIds) {
   const locks = roundLocks || {};
-  return (guesserIds || []).filter((id) => {
-    const v = locks[id];
-    if (typeof v !== 'number' || !Number.isFinite(v)) return false;
-    return dialValue == null || Math.abs(v - dialValue) < 0.05;
-  });
+  return (guesserIds || []).filter((id) => Number.isFinite(locks[id]));
 }
 
 /** Beklenen herkes kilitledi mi? En az bir kişi gerekir. */
-export function allLocked(roundLocks, guesserIds, dialValue = null) {
+export function allLocked(roundLocks, guesserIds) {
   const ids = guesserIds || [];
-  return ids.length > 0 &&
-    lockedGuessers(roundLocks, ids, dialValue).length === ids.length;
+  return ids.length > 0 && lockedGuessers(roundLocks, ids).length === ids.length;
 }
 
 /* ══════════ Bireysel mod puanlaması ══════════ */

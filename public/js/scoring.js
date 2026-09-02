@@ -56,17 +56,6 @@ export function clampValue(v) {
   return Math.min(100, Math.max(0, v));
 }
 
-/** Oyun sonu değerlendirmesi. maxPoints = oynanan tur sayısı × 4. */
-export function verdict(total, roundsPlayed) {
-  const max = Math.max(1, roundsPlayed * 4);
-  const ratio = total / max;
-  if (ratio >= 0.9) return { ratio, title: 'Aynı frekanstasınız', note: 'Bu kadarı telepati sayılır.' };
-  if (ratio >= 0.75) return { ratio, title: 'Çok iyi anlaşıyorsunuz', note: 'Birbirinizi fena okumuyorsunuz.' };
-  if (ratio >= 0.55) return { ratio, title: 'Fena değil', note: 'Sinyal var ama parazit de var.' };
-  if (ratio >= 0.35) return { ratio, title: 'Zayıf sinyal', note: 'Bazı turlarda tamamen kaybolmuşsunuz.' };
-  return { ratio, title: 'Farklı frekanslardasınız', note: 'Birbirinizi hiç tanımıyorsunuz galiba.' };
-}
-
 /** Fisher-Yates. rng enjekte edilebilir. */
 export function shuffle(arr, rng = Math.random) {
   const a = arr.slice();

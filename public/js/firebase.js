@@ -6,12 +6,11 @@
 // testler tarayıcıdakiyle BİREBİR aynı kodu çalıştırır.
 
 import { initializeApp } from 'firebase/app';
-import {
-  getAuth, signInAnonymously, onAuthStateChanged, connectAuthEmulator,
-} from 'firebase/auth';
+import { getAuth, onAuthStateChanged, connectAuthEmulator } from 'firebase/auth';
 import {
   getDatabase, ref, get, set, update, remove, push, onValue,
   runTransaction, serverTimestamp, onDisconnect, child, connectDatabaseEmulator,
+  query, orderByValue, endAt, limitToFirst,
 } from 'firebase/database';
 
 import { firebaseConfig } from './config.js';
@@ -19,6 +18,7 @@ import { firebaseConfig } from './config.js';
 export {
   ref, get, set, update, remove, push, onValue,
   runTransaction, serverTimestamp, onDisconnect, child,
+  query, orderByValue, endAt, limitToFirst,
 };
 
 const isBrowser = typeof window !== 'undefined';
@@ -53,20 +53,9 @@ if (USE_EMULATOR) {
 }
 
 let _uid = null;
-/** Anonim oturum açıldıktan sonra çözülen promise; uid döner. */
-export const authReady = new Promise((resolve, reject) => {
-  onAuthStateChanged(auth, (user) => {
-    if (user) { _uid = user.uid; resolve(user.uid); return; }
-    // Oturum düştü (belirteç yenilenemedi, depolama temizlendi...). Kurallar
-    // "auth != null" istediği için bu durumda HER yazma reddedilir; sessizce
-    // yeniden aç ki kullanıcı "permission denied" duvarına toslamasın.
-    if (_uid) {
-      console.warn('[Frekans] Oturum düştü, yeniden açılıyor.');
-      signInAnonymously(auth).catch(() => {});
-    }
-  }, reject);
-  signInAnonymously(auth).catch(reject);
-});
+
+// Oturumu auth.js açar; burada yalnızca güncel uid izlenir.
+onAuthStateChanged(auth, (user) => { _uid = user ? user.uid : null; });
 
 /** Oturum açıldıktan sonra senkron erişim için. */
 export function uid() { return _uid; }

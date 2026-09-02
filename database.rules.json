@@ -1,45 +1,95 @@
 {
   // Frekans — Realtime Database güvenlik kuralları.
   //
-  // Oyunun tek gerçek sırrı hedefin konumudur. Onu "secret/target" altında
-  // tutup okumasını psişikle (ve faz 'reveal' olduğunda herkesle) sınırlıyoruz.
+  // Oyunun gizli verileri hedefin konumu ve tahmin ibreleridir; ikisi de
+  // kural düzeyinde korunur, arayüzde gizlemekle yetinilmez.
   //
   // ÖNEMLİ: RTDB'de üst düğüme verilen .read alt düğümlerde İPTAL EDİLEMEZ.
   // Bu yüzden "rooms/$code" seviyesinde .read TANIMLANMAZ; izin her alt
-  // düğüme tek tek verilir, "secret" ise kendi kuralıyla ayrı durur.
+  // düğüme tek tek verilir, gizli düğümler kendi kurallarıyla ayrı durur.
+  //
+  // Hazır spektrum seti artık veritabanında değil, uygulamayla geliyor
+  // (public/js/builtin.js). Kimse silemez.
 
   "rules": {
     ".read": false,
     ".write": false,
 
-    // Ortak spektrum havuzu: giriş yapan herkes okur, ekler, siler.
-    "spectrums": {
+    // ── Kişiye özel: profil ve kendi spektrum setleri ──────────────────
+    // Yalnızca sahibi okur ve yazar. Misafir (anonim) hesap set kaydedemez.
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid && auth.token.firebase.sign_in_provider != 'anonymous'",
+
+        "profile": {
+          "name":      { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 14" },
+          "updatedAt": { ".validate": "newData.isNumber()" },
+          "$other":    { ".validate": false }
+        },
+
+        "packs": {
+          "$packId": {
+            ".validate": "!newData.exists() || newData.hasChildren(['name', 'cards'])",
+            "name":      { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 32" },
+            "updatedAt": { ".validate": "newData.isNumber()" },
+            "cards": {
+              "$i": {
+                "l":      { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 28" },
+                "r":      { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 28" },
+                "$other": { ".validate": false }
+              }
+            },
+            "$other": { ".validate": false }
+          }
+        },
+
+        "$other": { ".validate": false }
+      }
+    },
+
+    // ── Süresi dolmuş odaları bulmak için dizin ────────────────────────
+    // Değer = odanın bitiş zamanı. Süpürücü buradan sıralı okur.
+    "roomIndex": {
       ".read": "auth != null",
-      "$sid": {
+      ".indexOn": ".value",
+      "$code": {
         ".write": "auth != null",
-        ".validate": "!newData.exists() || newData.hasChildren(['left', 'right'])",
-        "left":      { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 28" },
-        "right":     { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 28" },
-        "addedBy":   { ".validate": "newData.isString() && newData.val().length <= 64" },
-        "createdAt": { ".validate": "newData.isNumber()" },
-        "$other":    { ".validate": false }
+        ".validate": "!newData.exists() || newData.isNumber()"
       }
     },
 
     "rooms": {
       "$code": {
 
-        // Odayı yalnızca kuran kişi, yalnızca tümüyle silebilir.
-        // (Odadan ayrılınca oda kapanır.)
-        ".write": "auth != null && !newData.exists() && data.child('meta/hostUid').val() === auth.uid",
+        // Odayı tümüyle silme: kuran kişi her zaman, ömrü dolduysa herkes.
+        // (Veri yazma bu seviyede kapalı; alt düğümlere iniyor.)
+        ".write": "auth != null && !newData.exists() && (data.child('meta/hostUid').val() === auth.uid || now > data.child('meta/expiresAt').val())",
 
         "meta": {
           ".read": "auth != null",
-          // Yazma serbest: bayat oda devralınırken başka biri de yazabilmeli.
-          ".write": "auth != null",
+          // Oda kurmak/devralmak hesap ister: misafir oda kuramaz.
+          ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
           "createdAt": { ".validate": "newData.isNumber()" },
+          "expiresAt": { ".validate": "newData.isNumber()" },
           "hostUid":   { ".validate": "newData.isString() && newData.val().length <= 64" },
           "$other":    { ".validate": false }
+        },
+
+        // Odanın destesi. Yalnızca kurucu, yalnızca lobide değiştirebilir.
+        "deck": {
+          ".read": "auth != null",
+          ".write": "auth != null && root.child('rooms/' + $code + '/meta/hostUid').val() === auth.uid && root.child('rooms/' + $code + '/state/phase').val() === 'lobby'",
+          "source": { ".validate": "newData.isString() && newData.val().length <= 12" },
+          "name":   { ".validate": "newData.isString() && newData.val().length <= 32" },
+          "cards": {
+            "$i": {
+              "l":      { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 28" },
+              "r":      { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 28" },
+              "$other": { ".validate": false }
+            }
+          },
+          "$other": { ".validate": false }
         },
 
         "players": {
@@ -57,7 +107,7 @@
           }
         },
 
-        // Faz makinesi. Tüm geçişler bu düğüm üzerinde transaction ile yapılır.
+        // Faz makinesi ve takım dağılımı. Tüm geçişler transaction ile.
         "state": {
           ".read": "auth != null",
           ".write": "auth != null"
@@ -78,7 +128,6 @@
         // ama kimse başkasının kilidini basamaz.
         "locks": {
           ".read": "auth != null",
-          // Toplu silme yalnızca yeni oyun başlarken.
           ".write": "auth != null && !newData.exists()",
           "$round": {
             "$uid": {
@@ -88,9 +137,8 @@
           }
         },
 
-        // Bireysel moddaki tahmin ibreleri. Hedef kadar gizli:
-        // tahminciler birbirini GÖREMEZ, psişik canlı görür,
-        // faz 'reveal' olunca herkese açılır.
+        // Tahmin ibreleri. Hedef kadar gizli: tahminciler birbirini GÖREMEZ,
+        // psişik canlı görür, faz 'reveal' olunca herkese açılır.
         "guesses": {
           ".write": "auth != null && !newData.exists()",
           "$round": {

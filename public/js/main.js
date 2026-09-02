@@ -1,82 +1,143 @@
-// Uygulamanın kablolaması: olaylar, ekran seçimi, oyun sahnesinin çizimi.
+// Uygulamanın kablolaması: kimlik kapısı, ekranlar, oyun sahnesinin çizimi.
 
-import { authReady } from './firebase.js';
+import {
+  initAuth, onUser, signInGoogle, signInApple, signInGuest, signOutUser,
+  currentUser, isGuest, canCreateRooms, canSavePacks, providerName,
+  PROVIDERS, takeRedirectError,
+} from './auth.js';
 import {
   state, subscribe, createRoom, joinRoom, leaveRoom, closeRoom, normalizeCode,
-  playerList, hostId, ownerId, iAmOwner, onlinePlayers, playerName, isOnline, colorFor,
+  playerList, hostId, ownerId, iAmOwner, onlinePlayers, playerName, isOnline,
+  colorFor, sweepExpiredRooms,
 } from './room.js';
 import * as game from './game.js';
-import * as spec from './spectrums.js';
-import {
-  totalScore, soloTotals, soloScores, psychicAverage, lockedGuessers,
-} from './logic.js';
+import * as packs from './packs.js';
+import { MODE, soloTotals, soloScores, psychicAverage, lockedGuessers } from './logic.js';
+import { TEAM_META, teamOf, teamTotals, psychicTeamAverage } from './teams.js';
+import { SOURCE, validatePack, normalizeSide } from './deck.js';
 import { scoreFor } from './scoring.js';
 import { Dial } from './dial.js';
 import {
-  $, showScreen, toast, setHint, el, renderLobby, renderOver, renderSpectrumList,
+  $, showScreen, toast, setHint, el,
+  renderLobby, renderOver, renderPacksList, renderCardList,
 } from './ui.js';
 
 const NAME_KEY = 'frekans.name';
 const SKIP_DELAY_MS = 10000;
 
 let dial = null;
-let specOpen = false;
-let specItems = [];
-let unsubSpec = null;
+let packsOpen = false;
+let myPacks = [];
+let unsubPacks = null;
+let editing = null;          // { id|null, name, cards }
 let stageSig = null;
 let shownTarget = null;
 let clueEnteredAt = 0;
 let heartbeat = null;
-let poolCount = null;
-let poolLoading = false;
 let joinedAt = 0;
 
 /* ══════════════════ Başlangıç ══════════════════ */
 
 export async function start() {
-  await authReady;
+  await initAuth();
 
-  const savedName = localStorage.getItem(NAME_KEY) || '';
-  $('#input-name').value = savedName;
-
-  const urlCode = normalizeCode(new URLSearchParams(location.search).get('oda') || '');
-  if (urlCode) $('#input-code').value = urlCode;
+  $('#btn-apple').hidden = !PROVIDERS.apple;
 
   dial = new Dial($('#dial'), {
     onInput: (v) => game.pushDial(v),
     onCommit: (v) => { game.pushDial(v); game.flushDial(); },
   });
 
+  wireLogin();
   wireHome();
   wireLobby();
   wireOver();
-  wireSpectrums();
+  wirePacks();
 
   subscribe(render);
-  showScreen('home');
+  onUser(onUserChanged);
 
-  if (urlCode && savedName) {
-    // Bağlantıyla gelindi ve isim hatırlanıyor: doğrudan odaya al.
-    await doJoin(urlCode, savedName);
-  }
+  const err = takeRedirectError();
+  if (err) setHint('#login-status', err, true);
 }
 
-/* ══════════════════ Açılış ekranı ══════════════════ */
+/** Kimlik değişince: ekranı ve kişiye bağlı verileri tazele. */
+function onUserChanged(user) {
+  if (unsubPacks) { unsubPacks(); unsubPacks = null; }
+  myPacks = [];
+
+  if (!user) {
+    if (state.code) leaveRoom({ notify: false });
+    showScreen('login');
+    return;
+  }
+
+  $('#input-name').value = savedName();
+  $('#account-label').textContent = isGuest()
+    ? 'Misafir olarak giriş yaptın'
+    : (currentUser()?.email || providerName() || 'Giriş yapıldı');
+
+  if (canSavePacks()) {
+    myPacks = packs.cachedPacks();
+    unsubPacks = packs.subscribePacks((list) => { myPacks = list; drawPacks(); render(); });
+  }
+
+  sweepExpiredRooms().catch(() => {});
+  render();
+  maybeAutoJoin();
+}
+
+function savedName() {
+  const stored = (localStorage.getItem(NAME_KEY) || '').trim();
+  return stored || providerName();
+}
+
+let autoJoined = false;
+async function maybeAutoJoin() {
+  if (autoJoined || state.code) return;
+  const code = normalizeCode(new URLSearchParams(location.search).get('oda') || '');
+  if (!code) return;
+  $('#input-code').value = code;
+  const name = savedName();
+  if (!name) return;
+  autoJoined = true;
+  await doJoin(code, name);
+}
+
+/* ══════════════════ Giriş ekranı ══════════════════ */
+
+function wireLogin() {
+  $('#btn-google').addEventListener('click', () =>
+    guarded('#login-status', '#btn-google', () => signInGoogle()));
+  $('#btn-apple').addEventListener('click', () =>
+    guarded('#login-status', '#btn-apple', () => signInApple()));
+  $('#btn-guest').addEventListener('click', () =>
+    guarded('#login-status', '#btn-guest', () => signInGuest()));
+}
+
+/* ══════════════════ Ana ekran ══════════════════ */
 
 function currentName() {
-  const n = $('#input-name').value.trim().slice(0, 14);
-  return n;
+  return $('#input-name').value.trim().slice(0, 14);
 }
 
-function rememberName(n) { localStorage.setItem(NAME_KEY, n); }
+function rememberName(n) {
+  localStorage.setItem(NAME_KEY, n);
+  packs.saveProfileName(n);
+}
 
 function wireHome() {
   $('#btn-create').addEventListener('click', async () => {
+    if (!canCreateRooms()) {
+      return setHint('#home-status',
+        'Oda kurmak için Google ile giriş yapmalısın. Misafir olarak odalara katılabilirsin.', true);
+    }
     const name = currentName();
     if (!name) return setHint('#home-status', 'Önce adını yaz.', true);
     rememberName(name);
     await guarded('#home-status', '#btn-create', async () => {
       joinedAt = Date.now();
+      await sweepExpiredRooms().catch(() => {});
       const code = await createRoom(name);
       history.replaceState(null, '', `?oda=${code}`);
     });
@@ -99,7 +160,15 @@ function wireHome() {
     if (e.key === 'Enter') $('#input-code').value ? $('#btn-join').click() : $('#btn-create').click();
   });
 
-  $('#btn-open-spectrums').addEventListener('click', openSpectrums);
+  $('#btn-open-packs').addEventListener('click', openPacks);
+
+  $('#btn-signout').addEventListener('click', async () => {
+    if (state.code) await leaveRoom();
+    history.replaceState(null, '', location.pathname);
+    localStorage.removeItem(NAME_KEY);
+    autoJoined = false;
+    await signOutUser();
+  });
 }
 
 async function doJoin(code, name) {
@@ -112,14 +181,13 @@ async function doJoin(code, name) {
 
 /** Butonu kilitler, hatayı ipucu satırına yazar. */
 async function guarded(hintSel, btnSel, fn) {
-  const btn = $(btnSel);
+  const btn = btnSel ? $(btnSel) : null;
   if (btn) btn.disabled = true;
   setHint(hintSel, '');
   try {
     await fn();
   } catch (err) {
-    // Kullanıcıya gösterilen beklenen hatalar (yanlış kod, kapalı oda...)
-    // program hatası değil; konsolu kirletmesin.
+    // Beklenen kullanıcı hataları program hatası değil; konsolu kirletmesin.
     console.warn('[Frekans]', err?.message || err);
     setHint(hintSel, friendlyError(err), true);
   } finally {
@@ -127,12 +195,10 @@ async function guarded(hintSel, btnSel, fn) {
   }
 }
 
-/** Ham Firebase hatalarını kullanıcının anlayacağı hale getirir. */
 function friendlyError(err) {
   const msg = String(err?.message || err || '');
   if (/permission[_ ]denied/i.test(msg)) {
-    return 'Sunucu isteği reddetti. Sayfayı yenileyip tekrar dene; ' +
-      'sorun sürerse tarayıcının site verilerini temizle.';
+    return 'Sunucu isteği reddetti. Sayfayı yenileyip tekrar dene.';
   }
   if (/network|offline|unavailable/i.test(msg)) {
     return 'Bağlantı kurulamadı. İnternetini kontrol et.';
@@ -158,13 +224,20 @@ function wireLobby() {
     await guarded('#lobby-hint', '#btn-start', () => game.startGame());
   });
 
-  $('#btn-lobby-spectrums').addEventListener('click', openSpectrums);
-
-  for (const btn of document.querySelectorAll('#mode-picker .mode-opt')) {
-    btn.addEventListener('click', () => {
-      game.setMode(btn.dataset.mode).catch(e => toast(e.message));
-    });
+  for (const btn of $$mode('#mode-picker')) {
+    btn.addEventListener('click', () => game.setMode(btn.dataset.mode).catch(e => toast(e.message)));
   }
+  for (const btn of $$mode('#deck-picker')) {
+    btn.addEventListener('click', () => applyDeck(btn.dataset.deck).catch(e => toast(e.message)));
+  }
+  $('#deck-pack').addEventListener('change', () => {
+    const source = state.deck?.source;
+    if (source && source !== SOURCE.BUILTIN) applyDeck(source).catch(e => toast(e.message));
+  });
+  $('#btn-shuffle-teams').addEventListener('click', () =>
+    game.shuffleTeams().catch(e => toast(e.message)));
+
+  $('#btn-lobby-packs')?.addEventListener('click', openPacks);
 
   $('#btn-share').addEventListener('click', async () => {
     const url = `${location.origin}${location.pathname}?oda=${state.code}`;
@@ -175,21 +248,32 @@ function wireLobby() {
   });
 }
 
+const $$mode = (sel) => Array.from(document.querySelectorAll(`${sel} .mode-opt`));
+
+/** Kurucunun deste seçimi. */
+async function applyDeck(source) {
+  if (source === SOURCE.BUILTIN) {
+    await game.setDeck({ source: SOURCE.BUILTIN });
+    return;
+  }
+  const packId = $('#deck-pack').value || myPacks[0]?.id;
+  const pack = myPacks.find(p => p.id === packId);
+  if (!pack) throw new Error('Önce Setlerim\'den bir set oluştur.');
+  await game.setDeck({ source, name: pack.name, cards: pack.cards });
+}
+
 /**
- * Geri düğmesi. Odayı kuran kişi çıkarsa oda kapanır, o yüzden yanında
- * başkası varken tek dokunuşla kapanmasın: ikinci dokunuş onaydır.
+ * Geri düğmesi. Odayı kuran çıkarsa oda kapanır, o yüzden yanında başkası
+ * varken tek dokunuşla kapanmasın: ikinci dokunuş onaydır.
  */
 function wireLeaveButton(sel) {
   const btn = $(sel);
   let armed = false;
   let timer = null;
-
   const disarm = () => { armed = false; btn.classList.remove('armed'); btn.textContent = '←'; };
 
   btn.addEventListener('click', async () => {
     if (!iAmOwner()) { await exitRoom(); return; }
-
-    // Odada başka kimse yoksa onaya gerek yok
     if (onlinePlayers().filter(p => p.id !== state.me).length === 0) {
       await closeAndGoHome();
       return;
@@ -215,7 +299,7 @@ function resetRoomUi() {
   stageSig = null;
   shownTarget = null;
   joinedAt = 0;
-  poolCount = null;
+  autoJoined = true;
 }
 
 async function exitRoom(opts) {
@@ -236,11 +320,21 @@ function wireOver() {
 /* ══════════════════ Ana çizim döngüsü ══════════════════ */
 
 function render() {
+  if (!currentUser()) { showScreen('login'); stopHeartbeat(); return; }
+
   $('#offline').hidden = !state.code || state.connected;
 
-  if (specOpen) { showScreen('spectrums'); return; }
+  if (packsOpen) { showScreen('packs'); return; }
 
-  if (!state.code) { showScreen('home'); stopHeartbeat(); return; }
+  if (!state.code) {
+    showScreen('home');
+    stopHeartbeat();
+    $('#btn-create').disabled = !canCreateRooms();
+    if (!canCreateRooms()) {
+      setHint('#home-status', 'Misafir olarak odalara katılabilirsin. Oda kurmak için Google ile gir.');
+    }
+    return;
+  }
 
   if (state.roomGone) {
     stopHeartbeat();
@@ -250,7 +344,6 @@ function render() {
   }
 
   if (state.game?.phase === 'closed') {
-    // Odayı kuran kişi kapattı: kaydımızı geri yazmadan çık.
     stopHeartbeat();
     toast(`${playerName(ownerId())} odayı kapattı.`, 4000);
     exitRoom({ notify: false });
@@ -258,15 +351,10 @@ function render() {
   }
 
   if (!state.game) {
-    // Oda kaydı henüz gelmedi. Uzun sürerse takılı kalmayalım.
     showScreen('boot');
     setHint('#boot-status', 'Odaya giriliyor…');
-    if (Date.now() - joinedAt > 8000) {
-      toast('Oda bulunamadı.');
-      exitRoom();
-    } else {
-      startHeartbeat();
-    }
+    if (Date.now() - joinedAt > 8000) { toast('Oda bulunamadı.'); exitRoom(); }
+    else startHeartbeat();
     return;
   }
 
@@ -274,8 +362,13 @@ function render() {
   if (phase === 'lobby') {
     stopHeartbeat();
     showScreen('lobby');
-    renderLobby(state, playerList(), hostId(), poolCount);
-    checkPool();
+    renderLobby(state, {
+      players: playerList(),
+      hostId: hostId(),
+      iAmHost: hostId() === state.me,
+      packs: myPacks,
+      onTeamPick: (t) => game.setMyTeam(t).catch(e => toast(e.message)),
+    });
     return;
   }
   if (phase === 'gameover') {
@@ -290,22 +383,8 @@ function render() {
   sideEffects();
 }
 
-/** Lobide havuzun boş olup olmadığını bir kez öğren (boş havuzla oyun başlamasın). */
-async function checkPool() {
-  if (poolCount !== null || poolLoading) return;
-  poolLoading = true;
-  try {
-    poolCount = (await spec.loadPool()).length;
-    render();
-  } catch {
-    /* bağlantı düzelince yeniden denenir */
-  } finally {
-    poolLoading = false;
-  }
-}
-
 function startHeartbeat() {
-  // Faz içi zamana bağlı öğeler (ör. "Sırayı atla" 10 sn sonra çıkar) için.
+  // Faz içi zamana bağlı öğeler (geri sayım, "Sırayı atla") için.
   if (!heartbeat) heartbeat = setInterval(render, 1000);
 }
 function stopHeartbeat() {
@@ -319,38 +398,26 @@ function renderGame() {
   const me = state.me;
   const psychic = g.psychicUid === me;
   const target = game.knownTarget();
-  const solo = game.isSolo();
   const locked = game.iLocked();
   const guesses = game.visibleGuesses();
+  const teamMode = game.isTeamMode();
 
   $('#game-round-label').textContent = `Tur ${g.roundIndex + 1}/${g.totalRounds}`;
-  $('#game-score').textContent = solo ? (soloTotals(state.history)[me] || 0)
-    : totalScore(state.history);
+  $('#game-score').textContent = myScore();
   $('#spec-left').textContent = g.spectrum?.left ?? '—';
   $('#spec-right').textContent = g.spectrum?.right ?? '—';
 
   // Sürükleme: tahmin fazında, psişik değilsen ve henüz kilitlemediysen
   dial.setInteractive(g.phase === 'guess' && !psychic && !locked);
 
-  if (solo) {
-    // Psişiğin kendi ibresi yok; diğerlerini renkli "hayalet" ibre olarak görür.
-    dial.setMainVisible(!psychic);
-    if (!psychic) {
-      const mine = guesses[me] ?? game.myGuess() ?? 50;
-      dial.setRemoteValue(mine);
-    }
-    dial.setGhosts(Object.entries(guesses)
-      .filter(([id]) => id !== me)
-      .map(([id, value]) => ({ id, value, color: colorFor(id) })));
-  } else {
-    dial.setMainVisible(true);
-    dial.setGhosts([]);
-    dial.setRemoteValue(g.phase === 'reveal'
-      ? (Number.isFinite(g.final) ? g.final : 50)
-      : (g.dial?.value ?? 50));
-  }
+  // Psişiğin kendi ibresi yok; diğerlerini renkli "hayalet" ibre olarak görür.
+  dial.setMainVisible(!psychic);
+  if (!psychic) dial.setRemoteValue(guesses[me] ?? game.myGuess() ?? 50);
+  dial.setGhosts(Object.entries(guesses)
+    .filter(([id]) => id !== me)
+    .map(([id, value]) => ({ id, value, color: colorFor(id) })));
 
-  renderLegend(solo, psychic, guesses);
+  renderLegend(guesses, teamMode);
 
   // Bantlar: psişik turun başından beri görür, diğerleri sadece açılışta
   const maySeeBands = (psychic && g.phase !== 'reveal') || g.phase === 'reveal';
@@ -370,18 +437,36 @@ function renderGame() {
   updateStageLive(g, psychic);
 }
 
-/** Kadranın altındaki renk açıklaması (yalnızca bireysel modda anlamlı). */
-function renderLegend(solo, psychic, guesses) {
+/** Üst bardaki puan: bireyselde kendi puanım, takımda takımımın puanı. */
+function myScore() {
+  if (game.isTeamMode()) {
+    const t = game.myTeam();
+    return t ? teamTotals(state.history)[t] : 0;
+  }
+  return soloTotals(state.history)[state.me] || 0;
+}
+
+/** Kadranın altındaki renk açıklaması. */
+function renderLegend(guesses, teamMode) {
   const box = $('#legend');
   const ids = Object.keys(guesses);
-  if (!solo || !ids.length) { box.hidden = true; box.textContent = ''; return; }
+  if (!ids.length) { box.hidden = true; box.textContent = ''; return; }
   box.hidden = false;
   box.textContent = '';
+  const teams = game.teamState();
   for (const id of ids) {
     const item = el('span');
     const dot = el('i');
     dot.style.background = id === state.me ? '#e7ecf3' : colorFor(id);
     item.append(dot, document.createTextNode(id === state.me ? 'sen' : playerName(id)));
+    if (teamMode) {
+      const t = teamOf(teams, id);
+      if (t) {
+        const tag = el('span', 'team-tag', TEAM_META[t].name);
+        tag.style.color = TEAM_META[t].color;
+        item.append(tag);
+      }
+    }
     box.append(item);
   }
 }
@@ -389,7 +474,6 @@ function renderLegend(solo, psychic, guesses) {
 function buildStage(g, psychic, target) {
   const stage = $('#stage');
   stage.textContent = '';
-
   if (g.phase === 'clue') return buildClueStage(stage, g, psychic);
   if (g.phase === 'guess') return buildGuessStage(stage, g, psychic);
   if (g.phase === 'reveal') return buildRevealStage(stage, g, target);
@@ -444,20 +528,12 @@ function buildGuessStage(stage, g, psychic) {
   box.append(el('div', 'what', g.clue || '—'));
   stage.append(box);
 
-  if (!game.isSolo()) {
-    const dragger = el('div', 'dragger');
-    dragger.id = 'dragger';
-    stage.append(dragger);
-  }
-
   const status = el('div', 'lock-status');
   status.id = 'lock-status';
   stage.append(status);
 
   if (psychic) {
-    stage.append(el('p', 'waiting', game.isSolo()
-      ? 'Sessiz kal! Herkes kendi tahminini yapıyor.'
-      : 'Sessiz kal! Takım kadranı ayarlıyor.'));
+    stage.append(el('p', 'waiting', 'Sessiz kal! Herkes kendi tahminini yapıyor.'));
     return;
   }
 
@@ -484,18 +560,26 @@ function buildRevealStage(stage, g, target) {
     return;
   }
 
-  if (game.isSolo()) {
-    buildSoloReveal(stage, g, target);
-  } else {
-    // Puanı history'yi beklemeden yerel hesapla: aynı saf fonksiyon,
-    // aynı hedef ve aynı ibre → her cihazda aynı sonuç.
-    const points = scoreFor(target, Number.isFinite(g.final) ? g.final : 50);
-    const burst = el('div', 'points-burst');
-    burst.append(
-      el('div', 'num' + (points ? '' : ' zero'), `+${points}`),
-      el('div', 'lbl', points === 4 ? 'Tam isabet!' : points ? 'puan' : 'Hedefin dışında'));
-    stage.append(burst);
-  }
+  const teamMode = game.isTeamMode();
+  const teams = game.teamState();
+  const guesses = game.visibleGuesses();
+  // Puanı history'yi beklemeden yerel hesapla: aynı saf fonksiyon, aynı hedef
+  // ve aynı ibreler → her cihazda aynı sonuç.
+  const points = soloScores(target, guesses);
+  const psyPoints = teamMode
+    ? psychicTeamAverage(points, teams, g.psychicUid)
+    : psychicAverage(points);
+
+  const own = state.me === g.psychicUid ? psyPoints : (points[state.me] ?? 0);
+  const burst = el('div', 'points-burst');
+  burst.append(
+    el('div', 'num' + (own ? '' : ' zero'), `+${own}`),
+    el('div', 'lbl', state.me === g.psychicUid
+      ? (teamMode ? 'takımına anlatım puanın' : 'ortalama — anlatım puanın')
+      : own === 4 ? 'Tam isabet!' : own ? 'puan' : 'Hedefin dışında'));
+  stage.append(burst);
+
+  stage.append(buildRoundTable(g, points, psyPoints, teamMode, teams));
 
   const box = el('div', 'clue-box');
   box.append(el('div', 'who', `${playerName(g.psychicUid)} demişti ki`));
@@ -511,62 +595,49 @@ function buildRevealStage(stage, g, target) {
   stage.append(next);
 }
 
-/** Bireysel mod açılışı: herkesin puanı ve psişiğin ortalaması. */
-function buildSoloReveal(stage, g, target) {
-  const guesses = game.visibleGuesses();
-  const points = soloScores(target, guesses);
-  const psyPoints = psychicAverage(points);
-  const mine = points[state.me];
-
-  const burst = el('div', 'points-burst');
-  const own = state.me === g.psychicUid ? psyPoints : (mine ?? 0);
-  burst.append(
-    el('div', 'num' + (own ? '' : ' zero'), `+${own}`),
-    el('div', 'lbl', state.me === g.psychicUid
-      ? 'ortalama — anlatım puanın'
-      : own === 4 ? 'Tam isabet!' : own ? 'puan' : 'Hedefin dışında'));
-  stage.append(burst);
-
+function buildRoundTable(g, points, psyPoints, teamMode, teams) {
   const list = el('ul', 'rank-list');
   const rows = Object.entries(points)
     .map(([id, pts]) => ({ id, pts, name: playerName(id) }))
-    .sort((a, b) => b.pts - a.pts || a.name.localeCompare(b.name, 'tr'));
+    .concat([{ id: g.psychicUid, pts: psyPoints, name: `${playerName(g.psychicUid)} (psişik)` }]);
+
+  if (teamMode) {
+    rows.sort((a, b) => (teamOf(teams, a.id) || 'z').localeCompare(teamOf(teams, b.id) || 'z')
+      || b.pts - a.pts);
+  } else {
+    rows.sort((a, b) => b.pts - a.pts || a.name.localeCompare(b.name, 'tr'));
+  }
+
   for (const r of rows) {
     const li = el('li');
     if (r.id === state.me) li.classList.add('me');
     const dot = el('span', 'dot');
     dot.style.background = r.id === state.me ? '#e7ecf3' : colorFor(r.id);
+    li.append(dot, el('span', 'nm', r.name));
+    if (teamMode) {
+      const t = teamOf(teams, r.id);
+      if (t) {
+        const tag = el('span', 'team-tag', TEAM_META[t].name);
+        tag.style.color = TEAM_META[t].color;
+        li.append(tag);
+      }
+    }
     const pts = el('span', 'pts', `+${r.pts}`);
     pts.dataset.p = String(r.pts);
-    li.append(dot, el('span', 'nm', r.name), pts);
+    li.append(pts);
     list.append(li);
   }
-  const psy = el('li');
-  const pdot = el('span', 'dot');
-  pdot.style.background = colorFor(g.psychicUid);
-  const psyPts = el('span', 'pts', `+${psyPoints}`);
-  psyPts.dataset.p = String(psyPoints);
-  psy.append(pdot, el('span', 'nm', `${playerName(g.psychicUid)} (psişik)`), psyPts);
-  list.append(psy);
-  stage.append(list);
+  return list;
 }
 
 /** Sahneyi yeniden kurmadan güncellenen küçük parçalar. */
 function updateStageLive(g, psychic) {
   if (g.phase === 'guess') {
-    const d = $('#dragger');
-    if (d) {
-      const by = g.dial?.by;
-      d.textContent = by && by !== state.me ? `${playerName(by)} çeviriyor` : '';
-      d.style.color = by ? colorFor(by) : '';
-    }
-
     const status = $('#lock-status');
     if (status) {
       status.textContent = '';
       const expected = game.expectedGuessers();
-      const done = lockedGuessers(game.roundLocks(), expected,
-        game.isSolo() ? null : (g.dial?.value ?? 50)).length;
+      const done = lockedGuessers(game.roundLocks(), expected).length;
 
       const line = el('span');
       line.append(el('b', null, `${done}/${expected.length}`),
@@ -576,8 +647,7 @@ function updateStageLive(g, psychic) {
       const left = game.countdownLeft();
       if (left != null) {
         status.append(document.createTextNode(' · '));
-        const c = el('span', 'countdown', `${Math.ceil(left / 1000)} sn`);
-        status.append(c);
+        status.append(el('span', 'countdown', `${Math.ceil(left / 1000)} sn`));
         status.append(el('div', null, 'Süre bitince tur otomatik açılır.'));
       } else if (!psychic && !game.iLocked()) {
         status.append(el('div', null, 'Herkes kilitleyince tur açılır.'));
@@ -604,75 +674,125 @@ async function sideEffects() {
   if (changed) render();
 }
 
-/* ══════════════════ Spektrum editörü ══════════════════ */
+/* ══════════════════ Setlerim ══════════════════ */
 
-function openSpectrums() {
-  specOpen = true;
-  showScreen('spectrums');
-  unsubSpec = spec.subscribePool((items) => {
-    specItems = items;
-    drawSpectrums();
-  });
+function openPacks() {
+  packsOpen = true;
+  editing = null;
+  showScreen('packs');
+  drawPacks();
+  if (canSavePacks()) packs.loadPacks().then((list) => { myPacks = list; drawPacks(); });
 }
 
-function closeSpectrums() {
-  specOpen = false;
-  if (unsubSpec) { unsubSpec(); unsubSpec = null; }
-  poolCount = specItems.length;        // editörde değişmiş olabilir
+function closePacks() {
+  if (editing) { editing = null; drawPacks(); return; }   // önce editörden çık
+  packsOpen = false;
   stageSig = null;
   render();
 }
 
-function drawSpectrums() {
-  renderSpectrumList(specItems, {
-    filter: $('#spec-search').value,
-    onDelete: async (s) => {
-      try { await spec.deleteSpectrum(s.id); }
-      catch { toast('Silinemedi.'); }
-    },
-    onSeed: async () => {
-      setHint('#spec-status', 'Yükleniyor…');
-      try {
-        const { added } = await spec.loadSeedPack();
-        setHint('#spec-status', `${added} spektrum eklendi.`);
-      } catch (e) { setHint('#spec-status', e.message, true); }
-    },
+function drawPacks() {
+  const editingNow = !!editing;
+  $('#packs-list-view').hidden = editingNow;
+  $('#packs-edit-view').hidden = !editingNow;
+  $('#packs-title').textContent = editingNow ? (editing.id ? 'Seti düzenle' : 'Yeni set') : 'Setlerim';
+
+  if (!editingNow) {
+    setHint('#packs-status', canSavePacks()
+      ? 'Oluşturduğun setler hesabına kaydedilir; lobide "Deste" bölümünden yükleyebilirsin.'
+      : '');
+    $('#btn-pack-new').disabled = !canSavePacks();
+    $('#btn-pack-import').disabled = !canSavePacks();
+    renderPacksList(myPacks, { canSave: canSavePacks(), onOpen: openEditor });
+    return;
+  }
+
+  $('#btn-pack-delete').hidden = !editing.id;
+  renderCardList(editing.cards, (i) => {
+    editing.cards.splice(i, 1);
+    drawPacks();
   });
 }
 
-function wireSpectrums() {
-  $('#btn-close-spectrums').addEventListener('click', closeSpectrums);
-  $('#spec-search').addEventListener('input', drawSpectrums);
+function openEditor(pack) {
+  editing = pack
+    ? { id: pack.id, name: pack.name, cards: pack.cards.map(c => ({ ...c })) }
+    : { id: null, name: '', cards: [] };
+  // Ad alanı yalnızca burada doldurulur: her yeniden çizimde yazılanı
+  // silmemesi için drawPacks ona dokunmaz.
+  $('#pack-name').value = editing.name;
+  drawPacks();
+}
 
-  $('#spec-form').addEventListener('submit', async (e) => {
+function wirePacks() {
+  $('#btn-close-packs').addEventListener('click', closePacks);
+  $('#btn-pack-new').addEventListener('click', () => openEditor(null));
+  $('#pack-name').addEventListener('input', (e) => {
+    if (editing) editing.name = e.target.value;
+  });
+
+  $('#card-form').addEventListener('submit', (e) => {
     e.preventDefault();
-    const l = $('#spec-in-left'), r = $('#spec-in-right');
-    try {
-      await spec.addSpectrum(l.value, r.value);
-      l.value = ''; r.value = '';
-      l.focus();
-      setHint('#spec-status', 'Eklendi.');
-    } catch (err) {
-      setHint('#spec-status', err.message, true);
+    const l = normalizeSide($('#card-left').value);
+    const r = normalizeSide($('#card-right').value);
+    if (!l || !r) return setHint('#pack-status', 'İki uç da dolu olmalı.', true);
+    if (l.toLocaleLowerCase('tr') === r.toLocaleLowerCase('tr')) {
+      return setHint('#pack-status', 'İki uç aynı olamaz.', true);
     }
+    editing.cards.unshift({ l, r });
+    $('#card-left').value = '';
+    $('#card-right').value = '';
+    $('#card-left').focus();
+    setHint('#pack-status', '');
+    drawPacks();
   });
 
-  $('#btn-spec-export').addEventListener('click', () => {
-    if (!specItems.length) return setHint('#spec-status', 'İndirilecek bir şey yok.', true);
-    spec.exportJson(specItems);
+  $('#btn-pack-save').addEventListener('click', async () => {
+    editing.name = $('#pack-name').value;   // yazılan son hâli al
+    await guarded('#pack-status', '#btn-pack-save', async () => {
+      validatePack(editing);                       // erken ve anlaşılır hata
+      await packs.savePack(editing);
+      myPacks = await packs.loadPacks();
+      editing = null;
+      drawPacks();
+      toast('Set kaydedildi.');
+    });
   });
 
-  $('#btn-spec-import').addEventListener('click', () => $('#spec-file').click());
-  $('#spec-file').addEventListener('change', async (e) => {
+  $('#btn-pack-delete').addEventListener('click', async () => {
+    const btn = $('#btn-pack-delete');
+    if (btn.dataset.armed !== '1') {
+      btn.dataset.armed = '1';
+      btn.textContent = 'Emin misin?';
+      setTimeout(() => { btn.dataset.armed = '0'; btn.textContent = 'Seti sil'; }, 3000);
+      return;
+    }
+    btn.dataset.armed = '0';
+    btn.textContent = 'Seti sil';
+    await guarded('#pack-status', '#btn-pack-delete', async () => {
+      await packs.deletePack(editing.id);
+      myPacks = await packs.loadPacks();
+      editing = null;
+      drawPacks();
+      toast('Set silindi.');
+    });
+  });
+
+  $('#btn-pack-export').addEventListener('click', () => {
+    packs.exportPack({ name: $('#pack-name').value || 'set', cards: editing.cards });
+  });
+
+  $('#btn-pack-import').addEventListener('click', () => $('#pack-file').click());
+  $('#pack-file').addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
     try {
-      const items = spec.parseImport(await file.text());
-      const { added, skipped } = await spec.addMany(items);
-      setHint('#spec-status', `${added} eklendi, ${skipped} atlandı.`);
+      const parsed = packs.parseImport(await file.text(), file.name.replace(/\.json$/i, ''));
+      openEditor({ id: null, name: parsed.name, cards: parsed.cards });
+      setHint('#pack-status', `${parsed.cards.length} kart okundu. Kaydetmeyi unutma.`);
     } catch (err) {
-      setHint('#spec-status', err.message, true);
+      setHint('#packs-status', err.message, true);
     }
   });
 }

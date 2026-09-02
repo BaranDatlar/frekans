@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  nextPsychic, mergeOrder, historyList, totalScore, pickSpectrum,
+  nextPsychic, mergeOrder, historyList, pickSpectrum,
   MODE, isMode, activeGuessers, lockedGuessers, allLocked,
   soloScores, psychicAverage, soloTotals, rankings,
 } from '../public/js/logic.js';
@@ -39,13 +39,6 @@ test('historyList tur sırasına göre sıralar', () => {
   const h = { 2: { points: 3 }, 0: { points: 4 }, 1: { points: 0 } };
   assert.deepEqual(historyList(h).map(x => x.index), [0, 1, 2]);
   assert.deepEqual(historyList(h).map(x => x.points), [4, 0, 3]);
-});
-
-test('totalScore toplar, boş history 0 verir', () => {
-  assert.equal(totalScore({ 0: { points: 4 }, 1: { points: 2 } }), 6);
-  assert.equal(totalScore({}), 0);
-  assert.equal(totalScore(null), 0);
-  assert.equal(totalScore({ 0: { points: undefined } }), 0);
 });
 
 test('pickSpectrum kullanılmışları eler', () => {
@@ -102,19 +95,6 @@ test('allLocked: çevrimdışı olanın kilidi beklenenleri etkilemez', () => {
 
 test('allLocked: kimse beklenmiyorsa false (tur boşuna açılmasın)', () => {
   assert.equal(allLocked({ a: 40 }, []), false);
-});
-
-test('ortak modda ibre oynayınca eski kilitler sayılmaz', () => {
-  const ids = ['a', 'b'];
-  const locks = { a: 40, b: 40 };
-  assert.equal(allLocked(locks, ids, 40), true, 'ibre kilitlenen yerdeyken geçerli');
-  assert.equal(allLocked(locks, ids, 55), false, 'ibre oynayınca onaylar düşmeli');
-  assert.deepEqual(lockedGuessers({ a: 40, b: 55 }, ids, 55), ['b'],
-    'yalnızca güncel değere kilitleyen sayılır');
-});
-
-test('bireysel modda ibre değeri karşılaştırılmaz', () => {
-  assert.equal(allLocked({ a: 12, b: 90 }, ['a', 'b'], null), true);
 });
 
 test('lockedGuessers yalnızca beklenenleri ve geçerli sayıları sayar', () => {
@@ -175,7 +155,8 @@ test('rankings puanı olmayan oyuncuyu 0 ile listeler', () => {
 
 test('MODE / isMode güvenli varsayılan verir', () => {
   assert.equal(isMode('solo'), MODE.SOLO);
-  assert.equal(isMode('shared'), MODE.SHARED);
-  assert.equal(isMode(undefined), MODE.SHARED, 'eski odalar ortak moda düşmeli');
-  assert.equal(isMode('saçma'), MODE.SHARED);
+  assert.equal(isMode('team'), MODE.TEAM);
+  assert.equal(isMode(undefined), MODE.SOLO);
+  assert.equal(isMode('shared'), MODE.SOLO, 'kaldırılan ortak mod bireysele düşmeli');
+  assert.equal(isMode('saçma'), MODE.SOLO);
 });

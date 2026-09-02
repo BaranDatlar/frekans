@@ -1,5 +1,6 @@
-// Arayüz dumanı testi: gerçek Chrome, üç ayrı tarayıcı bağlamı (üç oyuncu),
-// emülatördeki gerçek veritabanı. dial.js / ui.js / main.js bu testle kapsanır.
+// Arayüz testi: gerçek Chrome, ayrı tarayıcı bağlamları (ayrı oyuncular),
+// emülatördeki gerçek veritabanı ve kurallar.
+// auth.js / packs.js / dial.js / ui.js / main.js bu testle kapsanır.
 // Emülatör (hosting dahil) kapalıysa atlanır.
 
 import test from 'node:test';
@@ -12,378 +13,379 @@ const BASE = 'http://127.0.0.1:5055';
 async function hostingUp() {
   try { return (await fetch(BASE + '/index.html')).ok; } catch { return false; }
 }
-
 const up = await hostingUp();
 const opts = up ? {} : { skip: 'Hosting emülatörü çalışmıyor (npm run emu)' };
 
-/** Kadranın üstünde verilen değere denk gelen ekran noktasını hesaplar. */
-async function dialPoint(page, value) {
-  const box = await page.locator('#dial svg').boundingBox();
-  const scale = box.width / 400;
-  const th = Math.PI * (1 - value / 100);
-  const r = 150;
-  return {
-    x: box.x + (200 + r * Math.cos(th)) * scale,
-    y: box.y + (200 - r * Math.sin(th)) * scale,
-  };
+let seq = 0;
+
+/** Yeni bir tarayıcı bağlamı: kendi oturumu, kendi localStorage'ı. */
+async function newPlayer(browser, name, errors) {
+  const ctx = await browser.newContext({ viewport: { width: 420, height: 900 } });
+  const page = await ctx.newPage();
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name}: ${m.text()}`); });
+  page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
+  await page.goto(BASE + '/');
+  await page.waitForSelector('#screen-login.active', { timeout: 20000 });
+  page.playerName = name;
+  return page;
 }
 
-const needleValue = (page) => page.evaluate(() => {
-  const m = /rotate\(([-\d.]+)deg\)/.exec(document.querySelector('#dial .needle').style.transform);
-  return m ? Number(m[1]) / 1.8 + 50 : null;
-});
+/** Gerçek Google popup'ı otomatikleştirilemez; emülatörün sahte belirteci. */
+async function signInGoogle(page, name) {
+  await page.evaluate(async ({ sub, name: n }) => {
+    const m = await import('/js/auth.js');
+    await m.signInFakeGoogle({ sub, name: n });
+  }, { sub: `${name}-${Date.now()}-${++seq}`, name });
+  await page.waitForSelector('#screen-home.active', { timeout: 20000 });
+}
 
-const bandCount = (page) => page.locator('#dial .bands path').count();
+async function signInGuest(page) {
+  await page.click('#btn-guest');
+  await page.waitForSelector('#screen-home.active', { timeout: 20000 });
+}
 
-/** Hedef bandının çizim geometrisi — cihazlar arası karşılaştırmak için. */
+async function joinRoom(page, code, name) {
+  await page.fill('#input-name', name);
+  await page.fill('#input-code', code);
+  await page.click('#btn-join');
+  await page.waitForSelector('#screen-lobby.active', { timeout: 20000 });
+}
+
+/** Kadranda verilen değere denk gelen noktaya dokunur. */
+async function setDial(page, value) {
+  const box = await page.locator('#dial svg').boundingBox();
+  const s = box.width / 400, th = Math.PI * (1 - value / 100), r = 150;
+  await page.mouse.move(box.x + (200 + r * Math.cos(th)) * s, box.y + (200 - r * Math.sin(th)) * s);
+  await page.mouse.down();
+  await page.mouse.up();
+}
+
 const bandShape = (page) => page.evaluate(() =>
   [...document.querySelectorAll('#dial .bands path')]
     .map(el => `${el.getAttribute('fill')}@${el.getAttribute('d')}`).join('|'));
 
-test('üç tarayıcıdan bir tur oynanır', opts, async (t) => {
-  await wipe();
-  assert.equal(await dump(), null, 'emülatör temiz başlamalı');
+/** İpucu kutusu kimde çıktıysa psişik odur. */
+async function findPsychic(pages) {
+  await Promise.race(pages.map(p => p.waitForSelector('#clue-input', { timeout: 20000 })));
+  for (const p of pages) if (await p.locator('#clue-input').count()) return p;
+  throw new Error('psişik bulunamadı');
+}
 
+/* ══════════════════ Giriş ══════════════════ */
+
+test('giriş ekranı: misafir katılabilir, oda kuramaz', opts, async (t) => {
+  await wipe();
+  const errors = [];
   const browser = await chromium.launch({ channel: 'chrome' });
   t.after(() => browser.close());
 
+  const host = await newPlayer(browser, 'Ali', errors);
+  const guest = await newPlayer(browser, 'Misafir', errors);
+
+  // Giriş yapılmadan hiçbir oyun ekranı görünmemeli
+  assert.equal(await host.locator('#screen-home.active').count(), 0,
+    'kimlik çözülmeden ana ekran görünmemeli');
+  assert.equal(await host.locator('#btn-apple').isVisible(), false,
+    'Apple kapalıyken düğmesi görünmemeli');
+
+  await signInGuest(guest);
+  await guest.waitForFunction(() => document.querySelector('#btn-create')?.disabled === true,
+    null, { timeout: 10000 });
+  assert.match(await guest.textContent('#account-label'), /misafir/i);
+
+  // Misafir Setlerim'e girebilir ama kaydedemez
+  await guest.click('#btn-open-packs');
+  await guest.waitForSelector('#screen-packs.active');
+  assert.equal(await guest.locator('#btn-pack-new').isDisabled(), true,
+    'misafir yeni set oluşturamamalı');
+  assert.match(await guest.textContent('#packs-list'), /giriş yap/i);
+  await guest.click('#btn-close-packs');
+
+  // Hesapla giren oda kurabilir
+  await signInGoogle(host, 'Ali');
+  assert.equal(await host.locator('#btn-create').isDisabled(), false);
+  assert.equal(await host.inputValue('#input-name'), 'Ali', 'ad Google profilinden gelmeli');
+
+  await host.click('#btn-create');
+  await host.waitForSelector('#screen-lobby.active', { timeout: 20000 });
+  const code = (await host.textContent('#lobby-code')).trim();
+  assert.match(code, /^[A-Z]{4}$/);
+
+  await joinRoom(guest, code, 'Misafir');
+  await host.waitForFunction(() => document.querySelectorAll('#lobby-players li').length === 2);
+
+  assert.deepEqual(errors, [], 'konsolda hata olmamalı');
+});
+
+/* ══════════════════ Setler ve deste ══════════════════ */
+
+test('kendi setini oluşturup lobide deste olarak yükler', opts, async (t) => {
+  await wipe();
   const errors = [];
+  const browser = await chromium.launch({ channel: 'chrome' });
+  t.after(() => browser.close());
+
+  const p1 = await newPlayer(browser, 'Ali', errors);
+  const p2 = await newPlayer(browser, 'Beste', errors);
+  const p3 = await newPlayer(browser, 'Can', errors);
+  await signInGoogle(p1, 'Ali');
+  await signInGoogle(p2, 'Beste');
+  await signInGoogle(p3, 'Can');
+
+  // ── Set oluştur
+  await p1.click('#btn-open-packs');
+  await p1.waitForSelector('#screen-packs.active');
+  await p1.click('#btn-pack-new');
+  await p1.fill('#pack-name', 'Ofis Seti');
+  for (const [l, r] of [['Kısa toplantı', 'Uzun toplantı'], ['Sessiz ofis', 'Gürültülü ofis'],
+    ['Kötü kahve', 'İyi kahve']]) {
+    await p1.fill('#card-left', l);
+    await p1.fill('#card-right', r);
+    await p1.click('#card-form button[type=submit]');
+  }
+  await p1.waitForFunction(() => document.querySelectorAll('#card-list li').length === 3);
+  await p1.click('#btn-pack-save');
+  await p1.waitForSelector('#packs-list-view:not([hidden])', { timeout: 15000 });
+  assert.match(await p1.textContent('#packs-list'), /Ofis Seti/);
+  assert.match(await p1.textContent('#packs-list'), /3 kart/);
+
+  // Hesaba yazıldı mı
+  const stored = await dump();
+  assert.ok(JSON.stringify(stored).includes('Ofis Seti'), 'set veritabanına kaydedilmeli');
+
+  await p1.click('#btn-close-packs');
+  await p1.waitForSelector('#screen-home.active');
+
+  // ── Oda kur, desteyi özel sete çevir
+  await p1.click('#btn-create');
+  await p1.waitForSelector('#screen-lobby.active', { timeout: 20000 });
+  const code = (await p1.textContent('#lobby-code')).trim();
+  await joinRoom(p2, code, 'Beste');
+  await joinRoom(p3, code, 'Can');
+  const pages = [p1, p2, p3];
+  for (const p of pages) {
+    await p.waitForFunction(() => document.querySelectorAll('#lobby-players li').length === 3);
+  }
+
+  // Deste bölümü yalnızca kurucuda
+  assert.equal(await p2.locator('#deck-field').isVisible(), false,
+    'kurucu olmayan deste seçemez');
+  await p1.click('#deck-picker .mode-opt[data-deck="custom"]');
+  await p1.waitForFunction(() =>
+    document.querySelector('#deck-picker .mode-opt[data-deck="custom"]')
+      ?.getAttribute('aria-pressed') === 'true');
+  await p2.waitForFunction(() =>
+    /Ofis Seti/.test(document.querySelector('#deck-info')?.textContent || ''),
+    null, { timeout: 15000 });
+
+  // ── Oyna: kartlar özel setten gelmeli
+  await p1.click('#btn-start');
+  const psychic = await findPsychic(pages);
+  await psychic.waitForFunction(() => document.querySelectorAll('#dial .bands path').length === 5);
+  const label = await psychic.textContent('#spec-left');
+  assert.match(label, /Kısa toplantı|Sessiz ofis|Kötü kahve/, `kart özel setten gelmeli: ${label}`);
+
+  assert.deepEqual(errors, [], 'konsolda hata olmamalı');
+});
+
+/* ══════════════════ Bireysel tur ══════════════════ */
+
+test('bireysel modda bir tur: gizlilik, senkron, aynı puan', opts, async (t) => {
+  await wipe();
+  const errors = [];
+  const browser = await chromium.launch({ channel: 'chrome' });
+  t.after(() => browser.close());
+
   const pages = [];
-  for (const name of ['Ali', 'Beste', 'Can']) {
-    const ctx = await browser.newContext();
-    const page = await ctx.newPage();
-    page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name}: ${m.text()}`); });
-    page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
-    await page.goto(BASE + '/');
-    pages.push(Object.assign(page, { playerName: name }));
+  for (const n of ['Ali', 'Beste', 'Can']) {
+    const p = await newPlayer(browser, n, errors);
+    await signInGoogle(p, n);
+    pages.push(p);
   }
   const [p1, p2, p3] = pages;
-
-  // ── Oda kur / katıl
-  await p1.fill('#input-name', 'Ali');
   await p1.click('#btn-create');
-  await p1.waitForSelector('#screen-lobby.active');
+  await p1.waitForSelector('#screen-lobby.active', { timeout: 20000 });
   const code = (await p1.textContent('#lobby-code')).trim();
-  assert.match(code, /^[A-Z]{4}$/, `oda kodu 4 harf olmalı, gelen: ${code}`);
-
-  for (const [page, name] of [[p2, 'Beste'], [p3, 'Can']]) {
-    await page.fill('#input-name', name);
-    await page.fill('#input-code', code);
-    await page.click('#btn-join');
-    await page.waitForSelector('#screen-lobby.active');
-  }
-  for (const page of pages) {
-    await page.waitForFunction(() => document.querySelectorAll('#lobby-players li').length === 3);
+  await joinRoom(p2, code, 'Beste');
+  await joinRoom(p3, code, 'Can');
+  for (const p of pages) {
+    await p.waitForFunction(() => document.querySelectorAll('#lobby-players li').length === 3);
   }
 
-  // ── Havuz boşken oyun başlatılamamalı
-  await p1.waitForFunction(() => document.querySelector('#btn-start').disabled === true);
-  assert.match(await p1.textContent('#lobby-hint'), /spektrum/i,
-    'boş havuz uyarısı görünmeli');
-
-  // ── Spektrum editörü: hazır seti yükle, ara, ekle, iki adımda sil
-  await p1.click('#btn-lobby-spectrums');
-  await p1.waitForSelector('#screen-spectrums.active');
-  await p1.click('#spec-list .btn');
-  await p1.waitForFunction(() => document.querySelectorAll('#spec-list li').length > 50,
-    null, { timeout: 20000 });
-  const poolSize = await p1.locator('#spec-list li').count();
-  assert.ok(poolSize > 50, `havuz dolmalı, gelen: ${poolSize}`);
-
-  await p1.fill('#spec-search', 'Soğuk');
-  await p1.waitForFunction(() => document.querySelectorAll('#spec-list li').length < 10);
-  await p1.fill('#spec-search', '');
-
-  await p1.fill('#spec-in-left', 'Deneme Sol');
-  await p1.fill('#spec-in-right', 'Deneme Sağ');
-  await p1.click('#spec-form button[type=submit]');
-  const row = p1.locator('#spec-list li', { hasText: 'Deneme Sol' });
-  await row.waitFor({ timeout: 10000 });
-
-  await row.locator('.s-del').click();
-  assert.equal(await row.locator('.s-del').textContent(), 'Sil?', 'ilk dokunuş onay istemeli');
-  assert.equal(await row.count(), 1, 'ilk dokunuşta silinmemeli');
-  await row.locator('.s-del').click();
-  await row.waitFor({ state: 'detached', timeout: 10000 });
-
-  await p1.click('#btn-close-spectrums');
-  await p1.waitForSelector('#screen-lobby.active');
-
-  // ── Havuz dolunca başlatılabilir olmalı
-  await p1.waitForFunction(() => document.querySelector('#btn-start').disabled === false,
-    null, { timeout: 10000 });
-
-  // ── Başlat
   await p1.click('#btn-start');
-  for (const page of pages) await page.waitForSelector('#screen-game.active');
-
-  // ── Psişiği bul: ipucu kutusu sadece onda çıkar
-  await Promise.race(pages.map(p => p.waitForSelector('#clue-input', { timeout: 15000 })));
-  let psychic = null;
-  for (const page of pages) if (await page.locator('#clue-input').count()) psychic = page;
-  assert.ok(psychic, 'bir oyuncu psişik olmalı');
+  const psychic = await findPsychic(pages);
   const guessers = pages.filter(p => p !== psychic);
 
-  // ── GİZLİLİK: hedef bantları sadece psişikte çizilmiş olmalı
+  // ── GİZLİLİK: hedef bantları yalnızca psişikte
   await psychic.waitForFunction(() => document.querySelectorAll('#dial .bands path').length === 5);
-  assert.equal(await bandCount(psychic), 5, 'psişik hedef bantlarını görmeli');
   for (const g of guessers) {
-    assert.equal(await bandCount(g), 0, 'tahminci hedef bantlarını GÖRMEMELİ');
+    assert.equal(await g.locator('#dial .bands path').count(), 0,
+      'tahminci hedef aralığını GÖRMEMELİ');
   }
   const psychicBand = await bandShape(psychic);
+  assert.equal(await psychic.locator('#dial .needle').isVisible(), false,
+    'psişiğin kendi ibresi olmamalı');
+  // "Sırayı atla" gizli kalmalı (hidden özniteliği gerçekten uygulanmalı)
+  assert.equal(await guessers[0].locator('#btn-skip').isVisible(), false,
+    'sıra atlama düğmesi baştan görünmemeli');
 
-  // ── İpucu
   await psychic.fill('#clue-input', 'ılık çorba');
   await psychic.click('#btn-clue-send');
-  for (const page of pages) {
-    await page.waitForFunction(() =>
+  for (const p of pages) {
+    await p.waitForFunction(() =>
       document.querySelector('.clue-box .what')?.textContent === 'ılık çorba');
   }
 
-  // ── İbreyi sürükle (tahminci), diğerlerinde senkron olsun
-  const target = 25;
-  const pt = await dialPoint(guessers[0], target);
-  await guessers[0].mouse.move(pt.x, pt.y);
-  await guessers[0].mouse.down();
-  await guessers[0].mouse.move(pt.x + 1, pt.y);
-  await guessers[0].mouse.up();
-
-  const local = await needleValue(guessers[0]);
-  assert.ok(Math.abs(local - target) < 3, `sürükleyende ibre ~${target} olmalı, ${local}`);
-
-  for (const other of pages.filter(p => p !== guessers[0])) {
-    await other.waitForFunction((t) => {
-      const m = /rotate\(([-\d.]+)deg\)/.exec(
-        document.querySelector('#dial .needle').style.transform);
-      return m && Math.abs(Number(m[1]) / 1.8 + 50 - t) < 3;
-    }, target, { timeout: 10000 });
+  // ── Herkes kendi ibresini koyar; kimse diğerini görmez
+  await setDial(guessers[0], 25);
+  await setDial(guessers[1], 75);
+  for (const g of guessers) {
+    assert.equal(await g.locator('#dial .ghost').count(), 0,
+      'tahminci diğerinin ibresini görmemeli');
   }
+  await psychic.waitForFunction(() => document.querySelectorAll('#dial .ghost').length === 2,
+    null, { timeout: 15000 });
 
-  // ── Psişikte kilitleme düğmesi olmamalı
-  assert.equal(await psychic.locator('#btn-lock').count(), 0,
-    'psişik kilitleyememeli');
-
-  // ── Tek kilit turu açmamalı
+  // ── Tek kilit yetmez
   await guessers[0].click('#btn-lock');
-  for (const page of pages) {
-    await page.waitForFunction(() =>
-      document.querySelector('#lock-status')?.textContent.includes('1/2'),
-      null, { timeout: 15000 });
+  for (const p of pages) {
+    await p.waitForFunction(() =>
+      document.querySelector('#lock-status')?.textContent.includes('1/2'), null, { timeout: 15000 });
   }
   assert.equal(await guessers[1].locator('.points-burst').count(), 0,
     'bir kişinin kilidiyle tur açılmamalı');
   assert.equal(await guessers[0].locator('#btn-unlock').count(), 1,
     'kilitleyen fikrini değiştirebilmeli');
 
-  // ── İkinci kilit → açılış
   await guessers[1].click('#btn-lock');
-  for (const page of pages) {
-    await page.waitForSelector('.points-burst .num', { timeout: 15000 });
-    assert.equal(await bandCount(page), 5, 'açılışta herkes bantları görmeli');
-  }
-  // ── İpucunu verenin gördüğü aralık, açılışta herkesin gördüğüyle AYNI olmalı
-  for (const page of pages) {
-    assert.equal(await bandShape(page), psychicBand,
+  for (const p of pages) await p.waitForSelector('.points-burst .num', { timeout: 20000 });
+
+  // ── Açılışta herkes aynı aralığı görür
+  for (const p of pages) {
+    assert.equal(await bandShape(p), psychicBand,
       'psişiğin gördüğü hedef aralığı ile açılıştaki aralık aynı olmalı');
   }
-
-  const scores = await Promise.all(pages.map(p => p.textContent('.points-burst .num')));
-  assert.equal(new Set(scores).size, 1, `puan herkeste aynı olmalı, gelen: ${scores}`);
-  assert.match(scores[0], /^\+[0-4]$/);
-
-  // Üst bardaki toplam skor da eşleşmeli
-  const totals = await Promise.all(pages.map(p => p.textContent('#game-score')));
-  assert.equal(new Set(totals).size, 1, 'toplam skor herkeste aynı');
-  assert.equal(totals[0], scores[0].slice(1), 'ilk turda toplam = tur puanı');
-
-  // ── Sonraki tur
-  await pages[0].click('#btn-next');
-  for (const page of pages) {
-    await page.waitForFunction(() =>
-      document.querySelector('#game-round-label')?.textContent === 'Tur 2/10');
-  }
-
-  assert.deepEqual(errors, [], 'konsolda hata olmamalı');
-});
-
-test('bireysel modda herkes kendi kadranını çevirir', opts, async (t) => {
-  await wipe();
-  const browser = await chromium.launch({ channel: 'chrome' });
-  t.after(() => browser.close());
-
-  const errors = [];
-  const pages = [];
-  for (const name of ['Ali', 'Beste', 'Can']) {
-    const ctx = await browser.newContext();
-    const page = await ctx.newPage();
-    page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name}: ${m.text()}`); });
-    page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
-    await page.goto(BASE + '/');
-    pages.push(page);
-  }
-  const [p1, p2, p3] = pages;
-
-  await p1.fill('#input-name', 'Ali');
-  await p1.click('#btn-create');
-  await p1.waitForSelector('#screen-lobby.active');
-  const code = (await p1.textContent('#lobby-code')).trim();
-  for (const [page, name] of [[p2, 'Beste'], [p3, 'Can']]) {
-    await page.fill('#input-name', name);
-    await page.fill('#input-code', code);
-    await page.click('#btn-join');
-    await page.waitForSelector('#screen-lobby.active');
-  }
-  for (const page of pages) {
-    await page.waitForFunction(() => document.querySelectorAll('#lobby-players li').length === 3);
-  }
-
-  // Havuzu doldur
-  await p1.click('#btn-lobby-spectrums');
-  await p1.waitForFunction(() => document.querySelectorAll('#spec-list li').length > 0,
-    null, { timeout: 20000 });
-  if (await p1.locator('#spec-list .btn').count()) {
-    await p1.click('#spec-list .btn');
-    await p1.waitForFunction(() => document.querySelectorAll('#spec-list li').length > 50,
-      null, { timeout: 20000 });
-  }
-  await p1.click('#btn-close-spectrums');
-  await p1.waitForSelector('#screen-lobby.active');
-
-  // ── Mod seçimi: yalnızca kurucu değiştirebilir
-  assert.equal(await p2.locator('#mode-picker .mode-opt[data-mode="solo"]').isDisabled(), true,
-    'kurucu olmayan modu değiştirememeli');
-  await p1.click('#mode-picker .mode-opt[data-mode="solo"]');
-  for (const page of pages) {
-    await page.waitForFunction(() =>
-      document.querySelector('#mode-picker .mode-opt[data-mode="solo"]')
-        ?.getAttribute('aria-pressed') === 'true');
-  }
-
-  await p1.waitForFunction(() => document.querySelector('#btn-start').disabled === false);
-  await p1.click('#btn-start');
-  await Promise.race(pages.map(p => p.waitForSelector('#clue-input', { timeout: 20000 })));
-  let psychic = null;
-  for (const page of pages) if (await page.locator('#clue-input').count()) psychic = page;
-  const guessers = pages.filter(p => p !== psychic);
-
-  await psychic.fill('#clue-input', 'ayrı ayrı');
-  await psychic.click('#btn-clue-send');
-  for (const page of pages) {
-    await page.waitForFunction(() =>
-      document.querySelector('.clue-box .what')?.textContent === 'ayrı ayrı');
-  }
-
-  // ── Her tahminci kendi ibresini farklı yere koyar
-  const targets = [22, 78];
-  for (let i = 0; i < guessers.length; i++) {
-    const g = guessers[i];
-    const box = await g.locator('#dial svg').boundingBox();
-    const s = box.width / 400, th = Math.PI * (1 - targets[i] / 100), r = 150;
-    await g.mouse.move(box.x + (200 + r * Math.cos(th)) * s, box.y + (200 - r * Math.sin(th)) * s);
-    await g.mouse.down(); await g.mouse.up();
-  }
-
-  // ── GİZLİLİK: tahminci başkasının ibresini görmemeli
-  for (const g of guessers) {
-    assert.equal(await g.locator('#dial .ghost').count(), 0,
-      'tahminci diğerlerinin ibresini görmemeli');
-  }
-  // Psişik ikisini de görür
-  await psychic.waitForFunction(() => document.querySelectorAll('#dial .ghost').length === 2,
-    null, { timeout: 15000 });
-  assert.equal(await psychic.locator('#dial .needle').isVisible(), false,
-    'psişiğin kendi ibresi olmamalı');
-
-  // ── İkisi de kilitleyince açılır
-  for (const g of guessers) await g.click('#btn-lock');
-  for (const page of pages) await page.waitForSelector('.points-burst .num', { timeout: 20000 });
-
-  // Açılışta herkes iki ibreyi de görür (kendi ibresi beyaz ana ibre)
-  await psychic.waitForFunction(() => document.querySelectorAll('#dial .ghost').length === 2);
-  for (const g of guessers) {
-    await g.waitForFunction(() => document.querySelectorAll('#dial .ghost').length === 1,
-      null, { timeout: 15000 });
-  }
-
-  // Her cihazda aynı puan tablosu
   const tables = await Promise.all(pages.map(p =>
     p.locator('.stage .rank-list li').allTextContents()));
   assert.equal(new Set(tables.map(t => t.join('|'))).size, 1,
     `puan tablosu herkeste aynı olmalı: ${JSON.stringify(tables)}`);
-  assert.equal(tables[0].length, 3, 'iki tahminci + psişik satırı');
-
-  // Renkler ibreleri ayırt etmeye yarıyor: aynı odada çakışmamalı
-  const dotColors = await psychic.locator('.stage .rank-list .dot').evaluateAll(
-    els => els.map(e => e.style.background));
-  assert.equal(new Set(dotColors).size, 3,
-    `üç oyuncunun rengi farklı olmalı: ${dotColors}`);
 
   assert.deepEqual(errors, [], 'konsolda hata olmamalı');
 });
 
-test('odayı kuran çıkınca oda kapanır, diğerleri açığa düşer', opts, async (t) => {
+/* ══════════════════ Takım modu ══════════════════ */
+
+test('takım modu: takım seçimi, dengesizlikte başlatma kapalı, puan takıma', opts, async (t) => {
   await wipe();
+  const errors = [];
   const browser = await chromium.launch({ channel: 'chrome' });
   t.after(() => browser.close());
 
-  const errors = [];
   const pages = [];
-  for (const name of ['Ali', 'Beste', 'Can']) {
-    const ctx = await browser.newContext();
-    const page = await ctx.newPage();
-    page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name}: ${m.text()}`); });
-    page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
-    await page.goto(BASE + '/');
-    pages.push(page);
+  for (const n of ['Ali', 'Beste', 'Can', 'Deniz']) {
+    const p = await newPlayer(browser, n, errors);
+    await signInGoogle(p, n);
+    pages.push(p);
   }
-  const [p1, p2, p3] = pages;
-
-  await p1.fill('#input-name', 'Ali');
+  const [p1, p2, p3, p4] = pages;
   await p1.click('#btn-create');
-  await p1.waitForSelector('#screen-lobby.active');
+  await p1.waitForSelector('#screen-lobby.active', { timeout: 20000 });
   const code = (await p1.textContent('#lobby-code')).trim();
-  for (const [page, name] of [[p2, 'Beste'], [p3, 'Can']]) {
-    await page.fill('#input-name', name);
-    await page.fill('#input-code', code);
-    await page.click('#btn-join');
-    await page.waitForSelector('#screen-lobby.active');
-  }
-  for (const page of pages) {
-    await page.waitForFunction(() => document.querySelectorAll('#lobby-players li').length === 3);
+  for (const [p, n] of [[p2, 'Beste'], [p3, 'Can'], [p4, 'Deniz']]) await joinRoom(p, code, n);
+  for (const p of pages) {
+    await p.waitForFunction(() => document.querySelectorAll('#lobby-players li').length === 4);
   }
 
-  // Kurucu etiketi ilk oyuncuda
-  const tags = await p2.locator('#lobby-players li').first().allTextContents();
-  assert.match(tags.join(' '), /kurucu/, 'kurucu etiketi görünmeli');
+  // Takım modunu seç
+  assert.equal(await p1.locator('#teams-field').isVisible(), false,
+    'bireysel modda takım bölümü olmamalı');
+  await p1.click('#mode-picker .mode-opt[data-mode="team"]');
+  for (const p of pages) {
+    await p.waitForFunction(() => !document.querySelector('#teams-field').hidden);
+  }
+
+  // Herkes takımsızken başlatılamaz
+  await p1.waitForFunction(() => document.querySelector('#btn-start').disabled === true);
+  assert.match(await p1.textContent('#lobby-hint'), /en az 2/i);
+
+  // Dengesiz dağılım: 1–3
+  await p1.click('.team-card[data-team="a"]');
+  for (const p of [p2, p3, p4]) await p.click('.team-card[data-team="b"]');
+  await p1.waitForFunction(() => document.querySelector('#btn-start').disabled === true);
+  assert.match(await p1.textContent('#lobby-hint'), /en az 2/i,
+    '1–3 dağılımında başlatma kapalı kalmalı');
+
+  // Dengeli: 2–2
+  await p2.click('.team-card[data-team="a"]');
+  await p1.waitForFunction(() => document.querySelector('#btn-start').disabled === false,
+    null, { timeout: 15000 });
+
+  // Herkes takım etiketlerini görmeli
+  for (const p of pages) {
+    await p.waitForFunction(() => document.querySelectorAll('#lobby-players .team-tag').length === 4);
+  }
+
+  await p1.click('#btn-start');
+  const psychic = await findPsychic(pages);
+  const guessers = pages.filter(p => p !== psychic);
+  await psychic.fill('#clue-input', 'takım denemesi');
+  await psychic.click('#btn-clue-send');
+  for (const g of guessers) await g.waitForSelector('#btn-lock', { timeout: 20000 });
+
+  for (const g of guessers) await setDial(g, 40);
+  for (const g of guessers) await g.click('#btn-lock');
+  for (const p of pages) await p.waitForSelector('.points-burst .num', { timeout: 20000 });
+
+  // Tur tablosunda takım etiketleri ve psişik satırı
+  const rows = await psychic.locator('.stage .rank-list li').allTextContents();
+  assert.equal(rows.length, 4, 'üç tahminci + psişik satırı');
+  assert.ok(rows.some(r => /psişik/.test(r)), 'psişik satırı olmalı');
+  assert.equal(await psychic.locator('.stage .rank-list .team-tag').count(), 4,
+    'her satırda takım etiketi olmalı');
+
+  // Üst bardaki puan takım puanı
+  const scores = await Promise.all(pages.map(p => p.textContent('#game-score')));
+  assert.ok(scores.every(s => /^\d+$/.test(s)), `takım puanı sayı olmalı: ${scores}`);
+
+  assert.deepEqual(errors, [], 'konsolda hata olmamalı');
+});
+
+/* ══════════════════ Oda kapanışı ══════════════════ */
+
+test('odayı kuran çıkınca oda kapanır, diğerleri açığa düşer', opts, async (t) => {
+  await wipe();
+  const errors = [];
+  const browser = await chromium.launch({ channel: 'chrome' });
+  t.after(() => browser.close());
+
+  const p1 = await newPlayer(browser, 'Ali', errors);
+  const p2 = await newPlayer(browser, 'Beste', errors);
+  await signInGoogle(p1, 'Ali');
+  await signInGoogle(p2, 'Beste');
+
+  await p1.click('#btn-create');
+  await p1.waitForSelector('#screen-lobby.active', { timeout: 20000 });
+  const code = (await p1.textContent('#lobby-code')).trim();
+  await joinRoom(p2, code, 'Beste');
+  await p1.waitForFunction(() => document.querySelectorAll('#lobby-players li').length === 2);
+  assert.match(await p2.textContent('#lobby-players'), /kurucu/);
 
   // İlk dokunuş yalnızca onay ister
   await p1.click('#btn-leave-lobby');
   await p1.waitForSelector('#toast:not([hidden])', { timeout: 5000 });
-  assert.match(await p1.textContent('#toast'), /tekrar dokun/i, 'onay istemeli');
-  assert.equal(await p1.locator('#screen-lobby.active').count(), 1,
-    'ilk dokunuşta çıkılmamalı');
-  assert.equal(await p2.locator('#screen-lobby.active').count(), 1,
-    'diğerleri lobide kalmalı');
+  assert.match(await p1.textContent('#toast'), /tekrar dokun/i);
+  assert.equal(await p2.locator('#screen-lobby.active').count(), 1, 'diğeri lobide kalmalı');
 
-  // İkinci dokunuş odayı kapatır
   await p1.click('#btn-leave-lobby');
-  await p1.waitForSelector('#screen-home.active', { timeout: 15000 });
-  for (const page of [p2, p3]) {
-    await page.waitForSelector('#screen-home.active', { timeout: 20000 });
-    assert.match(await page.textContent('#toast'), /kapat/i,
-      'kapanma sebebi yazmalı');
-  }
+  await p1.waitForSelector('#screen-home.active', { timeout: 20000 });
+  await p2.waitForSelector('#screen-home.active', { timeout: 20000 });
+  assert.match(await p2.textContent('#toast'), /kapat/i);
 
-  // Kapanan odaya girilemez
   await p2.fill('#input-code', code);
   await p2.click('#btn-join');
   await p2.waitForFunction(() =>
     /oda yok|kapatıldı/i.test(document.querySelector('#home-status')?.textContent || ''),
-    null, { timeout: 15000 }).catch(async () => {
-      throw new Error('kapanan odaya girilebildi. ekran=' +
-        await p2.evaluate(() => document.querySelector('.screen.active')?.id) +
-        ' durum=' + JSON.stringify(await p2.textContent('#home-status')));
-    });
+    null, { timeout: 15000 });
 
   assert.deepEqual(errors, [], 'konsolda hata olmamalı');
 });

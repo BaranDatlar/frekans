@@ -5,14 +5,17 @@
 import {
   dbRef, get, set, update, remove, onValue, runTransaction,
   onDisconnect, uid, onConnectionChange,
+  query, orderByValue, endAt, limitToFirst,
 } from './firebase.js';
+import { isExpired, SOURCE } from './deck.js';
 
 /** Bir odanın altındaki tüm veri düğümleri (meta hariç). */
 const ROOM_NODES = ['players', 'state', 'history', 'secret', 'usedSpectrumIds', 'locks', 'guesses'];
 
 const ALPHABET = 'ABCDEFGHJKLMNPRSTUVYZ';   // I/O/Q gibi karışanlar yok
 const CODE_LEN = 4;
-const STALE_MS = 24 * 60 * 60 * 1000;       // 24 saatten eski oda devralınabilir
+/** Oda ömrü. Süresi dolan odaya girilemez ve herkes tarafından silinebilir. */
+export const ROOM_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const state = {
   code: null,
@@ -23,6 +26,7 @@ export const state = {
   game: null,         // rooms/{code}/state düğümü
   history: {},        // roundIndex -> kayıt
   locks: {},          // roundIndex -> { uid: kilitlenen ibre değeri }
+  deck: null,         // { source, name?, cards? }
   roomGone: false,    // oda sunucudan silindi (kapatıldı)
   connected: false,
 };
@@ -52,11 +56,14 @@ export async function createRoom(name) {
     const code = randomCode();
     try {
       const metaRef = dbRef(`rooms/${code}/meta`);
+      const now = Date.now();
+      const expiresAt = now + ROOM_TTL_MS;
       let takeover = false;
       const res = await runTransaction(metaRef, (cur) => {
-        if (cur && Date.now() - (cur.createdAt || 0) < STALE_MS) return;  // iptal: dolu
+        // Ömrü dolmamış oda meşguldür; dolmuşsa devralınır.
+        if (cur && !isExpired(cur.expiresAt ?? (cur.createdAt || 0) + ROOM_TTL_MS, now)) return;
         takeover = !!cur;
-        return { createdAt: Date.now(), hostUid: uid() };
+        return { createdAt: now, expiresAt, hostUid: uid() };
       });
       if (!res.committed) continue;
 
@@ -67,10 +74,13 @@ export async function createRoom(name) {
       }
 
       await set(dbRef(`rooms/${code}/state`), {
-        phase: 'lobby', mode: 'shared', roundIndex: 0, totalRounds: 10,
-        order: null, psychicUid: null, spectrum: null, clue: null,
-        dial: { value: 50, by: null, at: 0 }, final: null, lockDeadline: null,
+        phase: 'lobby', mode: 'solo', roundIndex: 0, totalRounds: 10,
+        order: null, psychicUid: null, teams: null,
+        drawId: null, spectrum: null, clue: null, lockDeadline: null,
       });
+      await set(dbRef(`rooms/${code}/deck`), { source: SOURCE.BUILTIN });
+      // Süresi dolmuşları bulmak için dizin (bkz. sweepExpiredRooms)
+      await set(dbRef(`roomIndex/${code}`), expiresAt);
       await enterRoom(code, name);
       return code;
     } catch (err) {
@@ -89,6 +99,10 @@ export async function joinRoom(code, name) {
   if (c.length !== CODE_LEN) throw new Error('Oda kodu 4 harf olmalı.');
   const snap = await get(dbRef(`rooms/${c}/meta`));
   if (!snap.exists()) throw new Error('Böyle bir oda yok.');
+  const meta = snap.val();
+  if (isExpired(meta?.expiresAt ?? (meta?.createdAt || 0) + ROOM_TTL_MS)) {
+    throw new Error('Bu odanın süresi dolmuş.');
+  }
   // Kapatılmış oda birkaç yüz milisaniye daha duruyor olabilir; içine düşme.
   const phase = (await get(dbRef(`rooms/${c}/state/phase`))).val();
   if (phase === 'closed') throw new Error('Bu oda kapatıldı.');
@@ -146,6 +160,10 @@ async function enterRoom(code, name) {
     state.locks = s.val() || {};
     emit();
   }));
+  unsubs.push(onValue(dbRef(`rooms/${code}/deck`), (s) => {
+    state.deck = s.val();
+    emit();
+  }));
 }
 
 /** Dinleyicileri kapatır; odayı terk etmez. */
@@ -169,9 +187,13 @@ export async function leaveRoom({ notify = true } = {}) {
       await update(dbRef(`rooms/${code}/players/${me}`), { online: false });
     } catch { /* yoksay */ }
   }
-  state.code = null; state.game = null; state.meta = null;
-  state.players = {}; state.history = {}; state.locks = {}; state.roomGone = false;
+  clearRoomState();
   emit();
+}
+
+function clearRoomState() {
+  state.code = null; state.game = null; state.meta = null; state.deck = null;
+  state.players = {}; state.history = {}; state.locks = {}; state.roomGone = false;
 }
 
 /* ══════════ Türetilmiş yardımcılar ══════════ */
@@ -224,16 +246,37 @@ export async function closeRoom() {
   } catch { /* yoksay */ }
   // Diğer cihazlar sinyali alsın diye kısa bir soluk, sonra tamamen sil.
   await new Promise(r => setTimeout(r, 600));
+  await remove(dbRef(`roomIndex/${code}`)).catch(() => {});
   try {
     await remove(dbRef(`rooms/${code}`));
   } catch (err) {
     // Sessizce yutmak yerine görünür kıl: burada kalan oda hayalet oda olur.
     console.warn('[Frekans] Oda silinemedi:', err?.code || err?.message || err);
   }
-  state.code = null; state.game = null; state.meta = null;
-  state.players = {}; state.history = {}; state.locks = {}; state.roomGone = false;
+  clearRoomState();
   emit();
   return true;
+}
+
+/**
+ * Süresi dolmuş odaları siler. Sunucu kodu (Cloud Functions) kullanmadan
+ * temizlik: `roomIndex` düğümü kodları bitiş zamanına göre sıralı tutar,
+ * güvenlik kuralı da süresi dolmuş odanın herkes tarafından silinmesine
+ * izin verir. Uygulama açılışında ve oda kurulurken çağrılır.
+ */
+export async function sweepExpiredRooms(limit = 10) {
+  try {
+    const snap = await get(query(
+      dbRef('roomIndex'), orderByValue(), endAt(Date.now()), limitToFirst(limit)));
+    const expired = Object.keys(snap.val() || {});
+    for (const code of expired) {
+      await remove(dbRef(`rooms/${code}`)).catch(() => {});
+      await remove(dbRef(`roomIndex/${code}`)).catch(() => {});
+    }
+    return expired.length;
+  } catch {
+    return 0;   // izin/bağlantı sorunu: temizlik kritik değil, sonra denenir
+  }
 }
 
 export function playerName(id) {

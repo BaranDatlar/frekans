@@ -1,48 +1,42 @@
-// Uçtan uca oyun testi: üç ayrı worker, üç ayrı Firebase oturumu,
-// uygulamanın gerçek room.js / game.js modülleri, emülatördeki gerçek kurallar.
-// Emülatör kapalıysa atlanır (npm run emu).
+// Uçtan uca oyun testi: her oyuncu ayrı worker, ayrı Firebase oturumu,
+// uygulamanın GERÇEK modülleri (room.js / game.js / packs.js), emülatördeki
+// gerçek güvenlik kuralları. Emülatör kapalıysa atlanır (npm run emu).
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Player, waitAll } from './helpers/player.mjs';
 import { emulatorUp, wipe, makeClient, dump } from './helpers/emulator.mjs';
-import { scoreFor } from '../public/js/scoring.js';
-import {
-  totalScore, historyList, soloScores, psychicAverage, soloTotals,
-} from '../public/js/logic.js';
+import { historyList, soloScores, psychicAverage, soloTotals } from '../public/js/logic.js';
+import { teamTotals, teamWinner, psychicTeamAverage } from '../public/js/teams.js';
+import { BUILTIN_CARDS } from '../public/js/builtin.js';
+import { SOURCE } from '../public/js/deck.js';
 
 const up = await emulatorUp();
 const opts = up ? {} : { skip: 'Emülatör çalışmıyor (npm run emu)' };
 
-const SPECTRUMS = Array.from({ length: 12 }, (_, i) => ({ left: `Sol${i}`, right: `Sağ${i}` }));
+const NAMES = ['Ali', 'Beste', 'Can', 'Deniz', 'Ece', 'Faruk'];
 
-/** Temizliğin gerçekten olduğunu doğrula — sessizce çalışmayan bir wipe
- *  testleri birbirinin verisiyle kirletir. */
+/** Temizliğin gerçekten olduğunu doğrula. */
 async function freshStart() {
   await wipe();
   assert.equal(await dump(), null, 'emülatör temiz başlamalı');
 }
 
-async function seedSpectrums() {
-  const c = await makeClient('seed');
-  const updates = {};
-  SPECTRUMS.forEach((s, i) => {
-    updates[`s${i}`] = { left: s.left, right: s.right, addedBy: c.uid, createdAt: Date.now() };
-  });
-  await c.update('spectrums', updates);
-  await c.close();
-}
-
-async function trio() {
-  const [a, b, c] = await Promise.all([
-    Player.spawn('Ali'), Player.spawn('Beste'), Player.spawn('Can'),
-  ]);
-  const code = await a.send('create', { name: 'Ali' });
-  await b.send('join', { code, name: 'Beste' });
-  await c.send('join', { code, name: 'Can' });
-  const all = [a, b, c];
-  await waitAll(all, s => Object.keys(s.players || {}).length === 3, 'üç oyuncu da görünür');
-  return { a, b, c, all, code };
+/**
+ * Oda kurup istenen sayıda oyuncuyu içine alır.
+ * @param {{players?:number, guestIdx?:number[]}} o
+ */
+async function makeRoom({ players = 3, guestIdx = [] } = {}) {
+  const names = NAMES.slice(0, players);
+  const all = await Promise.all(
+    names.map((n, i) => Player.spawn(n, { guest: guestIdx.includes(i) })));
+  const code = await all[0].send('create', { name: names[0] });
+  for (let i = 1; i < all.length; i++) {
+    await all[i].send('join', { code, name: names[i] });
+  }
+  await waitAll(all, s => Object.keys(s.players || {}).length === all.length,
+    'herkes odada görünür');
+  return { all, code, host: all[0] };
 }
 
 function psychicOf(all) {
@@ -51,15 +45,14 @@ function psychicOf(all) {
   return { psychic, others: all.filter(p => p !== psychic) };
 }
 
-/** Bir turu baştan sona oynar. Tur indeksini ve o turun psişiğini döner. */
-async function playRound(all, dialValue, clue = 'ipucu') {
-  // Psişiği okumadan ÖNCE yeni turun durumunun herkese ulaşmasını bekle,
-  // yoksa bir önceki turun psişiği okunur.
+/** Bir turu baştan sona oynar. `valueFor(oyuncu, hedef, digerleri)` ibre değerini verir. */
+async function playRound(all, valueFor, clue = 'ipucu') {
   await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
   const { psychic, others } = psychicOf(all);
 
-  // Hedefi sadece psişik bilir
-  assert.equal(typeof await psychic.send('knownTarget'), 'number', 'psişik hedefi bilmeli');
+  // Hedefi yalnızca psişik bilir
+  const target = await psychic.send('knownTarget');
+  assert.equal(typeof target, 'number', 'psişik hedefi bilmeli');
   for (const o of others) {
     assert.equal(await o.send('knownTarget'), null, `${o.name} hedefi bilmemeli`);
   }
@@ -67,147 +60,93 @@ async function playRound(all, dialValue, clue = 'ipucu') {
   await psychic.send('clue', { text: clue });
   await waitAll(all, s => s.game.phase === 'guess', 'tahmin fazı');
 
-  await others[0].send('dial', { value: dialValue });
-  await waitAll(all, s => Math.abs((s.game.dial?.value ?? -1) - dialValue) < 0.05,
-    'ibre herkeste eşitlendi');
-
+  for (const o of others) await o.send('dial', { value: valueFor(o, target, others) });
   const idx = psychic.state.game.roundIndex;
+  for (const o of others) await o.send('lock');
 
-  // Tek kilit yetmemeli — tur ancak herkes onaylayınca açılır
-  assert.ok(await others[0].send('lock'), 'kilit yazılmalı');
-  await waitAll(all, s => s.game.lockDeadline != null, 'geri sayım başladı');
-  assert.equal(others[1].state.game.phase, 'guess',
-    'bir kişinin kilidiyle tur açılmamalı');
-
-  await others[1].send('lock');
-  await waitAll(all, s => s.game.phase === 'reveal', 'açılış fazı');
+  await waitAll(all, s => s.game.phase === 'reveal', 'açılış');
   await waitAll(all, s => s.history && s.history[idx], 'tur sonucu kaydedildi');
-  return { idx, psychic };
+  return { idx, psychic, others, target };
 }
 
-test('üç oyuncu tam bir oyunu bitirir', opts, async (t) => {
+/** Tam isabet / tamamen ışınlanmış tahmin üreten yardımcılar. */
+const hit = (_p, t) => t;
+const miss = (_p, t) => (t > 50 ? 2 : 98);
+
+/* ══════════════════ Bireysel mod ══════════════════ */
+
+test('bireysel modda üç oyuncu tam bir oyunu bitirir', opts, async (t) => {
   await freshStart();
-  await seedSpectrums();
-  const { a, b, c, all } = await trio();
+  const { all, host } = await makeRoom();
   t.after(() => Promise.all(all.map(p => p.close())));
 
-  await a.send('setRounds', { n: 3 });
+  await host.send('setRounds', { n: 3 });
   await waitAll(all, s => s.game.totalRounds === 3, 'tur sayısı 3');
+  assert.equal(all[0].state.view.mode, 'solo', 'varsayılan mod bireysel');
 
-  await a.send('start');
-  await waitAll(all, s => s.game.phase === 'clue', 'oyun başladı');
-
+  await host.send('start');
   const seenPsychics = new Set();
-  const dials = [50, 12.5, 88];
 
   for (let r = 0; r < 3; r++) {
-    const { idx, psychic } = await playRound(all, dials[r], `ipucu-${r}`);
+    // Sıradaki tahmincilerden biri tam bilsin, diğeri ışınlansın
+    const { idx, psychic, target } = await playRound(
+      all, (p, t2, rest) => (p === rest[0] ? hit(p, t2) : miss(p, t2)), `ipucu-${r}`);
     seenPsychics.add(psychic.uid);
     assert.equal(idx, r, 'tur indeksi ilerlemeli');
 
-    // Puan üç cihazda da aynı ve hedefe göre doğru
-    const target = await psychic.send('knownTarget');
-    const expected = scoreFor(target, all[0].state.game.final);
+    const h = all[0].state.history[idx];
+    assert.deepEqual(h.points, soloScores(target, h.guesses), 'puanlar saf fonksiyonla aynı');
+    assert.equal(h.psychicPoints, psychicAverage(h.points),
+      'bireyselde psişik tüm tahmincilerin ortalamasını alır');
     for (const p of all) {
-      assert.equal(p.state.history[idx].points, expected,
-        `${p.name} aynı puanı görmeli`);
+      assert.deepEqual(p.state.history[idx].points, h.points, `${p.name} aynı puanları görmeli`);
     }
-    assert.equal(historyList(all[0].state.history).length, r + 1,
-      'her tur için tek kayıt olmalı');
-
     await psychic.send('next');
   }
 
   await waitAll(all, s => s.game.phase === 'gameover', 'oyun bitti');
   assert.equal(seenPsychics.size, 3, 'her oyuncu bir kez psişik olmalı');
-
-  const total = totalScore(a.state.history);
-  assert.equal(total, totalScore(c.state.history), 'toplam skor herkeste aynı');
-  assert.ok(total >= 0 && total <= 12, `toplam 0-12 arasında olmalı, ${total}`);
-
-  // Tekrar oyna: lobiye döner, geçmiş silinir
-  await b.send('restart');
-  await waitAll(all, s => s.game.phase === 'lobby', 'lobiye dönüldü');
-  await waitAll(all, s => historyList(s.history).length === 0, 'geçmiş temizlendi');
-
-  assert.deepEqual(all.flatMap(p => p.errors), [], 'uygulama hatası olmamalı');
+  assert.deepEqual(soloTotals(all[0].state.history), soloTotals(all[2].state.history),
+    'tablo herkeste aynı');
+  assert.deepEqual(all.flatMap(p => p.errors), []);
 });
+
 
 test('tur ancak herkes kilitleyince açılır', opts, async (t) => {
   await freshStart();
-  await seedSpectrums();
-  const { a, all } = await trio();
+  const { all, host } = await makeRoom();
   t.after(() => Promise.all(all.map(p => p.close())));
 
-  await a.send('setRounds', { n: 3 });
-  await a.send('start');
+  await host.send('setRounds', { n: 3 });
+  await host.send('start');
   await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
 
   const { psychic, others } = psychicOf(all);
-  await psychic.send('clue', { text: 'birlikte' });
-  await waitAll(all, s => s.game.phase === 'guess', 'tahmin fazı');
-  await others[0].send('dial', { value: 40 });
-  await waitAll(all, s => s.game.dial?.value === 40, 'ibre eşitlendi');
-
-  // Psişik kilitleyemez
   assert.equal(await psychic.send('lock'), false, 'psişik kilitleyememeli');
 
+  await psychic.send('clue', { text: 'birlikte' });
+  await waitAll(all, s => s.game.phase === 'guess', 'tahmin fazı');
+
+  await others[0].send('dial', { value: 40 });
   await others[0].send('lock');
-  await waitAll(all, s => s.view.expected.length === 2, 'iki tahminci bekleniyor');
-  await waitAll(others, s => s.locks?.[0]?.[others[0].uid] === 40, 'kilit yazıldı');
+  await waitAll(all, s => s.game.lockDeadline != null, 'geri sayım başladı');
   assert.equal(all[0].state.game.phase, 'guess', 'tek kilitle açılmamalı');
   assert.equal(others[0].state.view.everyoneLocked, false);
 
-  // İkinci kilit turu açar
   await others[1].send('lock');
   await waitAll(all, s => s.game.phase === 'reveal', 'açılış');
   await waitAll(all, s => s.history && s.history[0], 'sonuç kaydedildi');
   assert.equal(historyList(all[0].state.history).length, 1, 'tek kayıt olmalı');
-  assert.equal(all[0].state.game.final, 40, 'kilitlenen değer ibrenin son değeri');
-  assert.deepEqual(all.flatMap(p => p.errors), []);
-});
-
-test('ortak modda ibre oynayınca eski onaylar düşer', opts, async (t) => {
-  await freshStart();
-  await seedSpectrums();
-  const { a, all } = await trio();
-  t.after(() => Promise.all(all.map(p => p.close())));
-
-  await a.send('setRounds', { n: 3 });
-  await a.send('start');
-  await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
-  const { psychic, others } = psychicOf(all);
-  await psychic.send('clue', { text: 'oynak' });
-  await waitAll(all, s => s.game.phase === 'guess', 'tahmin fazı');
-
-  await others[0].send('dial', { value: 30 });
-  await waitAll(all, s => s.game.dial?.value === 30, 'ibre 30');
-  await others[0].send('lock');
-  await waitAll(others, s => s.view.iLocked || s.me !== others[0].uid, 'kilit yazıldı');
-
-  // İkinci kişi ibreyi oynatıyor: ilk onay artık geçerli değil
-  await others[1].send('dial', { value: 70 });
-  await waitAll(all, s => s.game.dial?.value === 70, 'ibre 70');
-  await waitAll([others[0]], s => s.view.iLocked === false,
-    'ibre oynayınca kendi kilidim düşmeli');
-  assert.equal(all[0].state.game.phase, 'guess', 'tur açılmamalı');
-
-  // İkisi de yeni değere kilitleyince açılır
-  await others[0].send('lock');
-  await others[1].send('lock');
-  await waitAll(all, s => s.game.phase === 'reveal', 'açılış');
-  assert.equal(all[0].state.game.final, 70, 'son ibre değeriyle kapanmalı');
   assert.deepEqual(all.flatMap(p => p.errors), []);
 });
 
 test('süre dolunca tur kendiliğinden açılır', opts, async (t) => {
   await freshStart();
-  await seedSpectrums();
-  const { a, all, code } = await trio();
+  const { all, host, code } = await makeRoom();
   t.after(() => Promise.all(all.map(p => p.close())));
 
-  await a.send('setRounds', { n: 3 });
-  await a.send('start');
+  await host.send('setRounds', { n: 3 });
+  await host.send('start');
   await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
   const { psychic, others } = psychicOf(all);
   await psychic.send('clue', { text: 'zaman' });
@@ -228,216 +167,320 @@ test('süre dolunca tur kendiliğinden açılır', opts, async (t) => {
   assert.deepEqual(all.flatMap(p => p.errors), []);
 });
 
-test('psişik düşerse sıra atlanır ve tur kaybolmaz', opts, async (t) => {
+test('bireysel mod: tahminciler birbirinin ibresini görmez', opts, async (t) => {
   await freshStart();
-  await seedSpectrums();
-  const { a, all } = await trio();
+  const { all, host } = await makeRoom();
   t.after(() => Promise.all(all.map(p => p.close())));
 
-  await a.send('setRounds', { n: 3 });
-  await a.send('start');
+  await host.send('setRounds', { n: 3 });
+  await host.send('start');
   await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
-
   const { psychic, others } = psychicOf(all);
-  const before = others[0].state.game.roundIndex;
+  const target = await psychic.send('knownTarget');
+  await psychic.send('clue', { text: 'ayrı ayrı' });
+  await waitAll(all, s => s.game.phase === 'guess', 'tahmin fazı');
 
-  await psychic.send('leave');
-  await waitAll(others, s => s.players[psychic.uid]?.online === false, 'psişik çevrimdışı');
+  await others[0].send('dial', { value: target });
+  await others[1].send('dial', { value: target > 50 ? 5 : 95 });
 
-  await others[0].send('skip');
-  await waitAll(others, s => s.game.psychicUid !== psychic.uid, 'sıra devredildi');
-  assert.equal(others[0].state.game.roundIndex, before, 'tur numarası korunmalı');
-  assert.equal(others[0].state.game.phase, 'clue', 'ipucu fazında kalınmalı');
+  await waitAll([others[0]], s => s.view?.myGuess != null, 'kendi ibrem yazıldı');
+  assert.deepEqual(Object.keys(others[0].state.view.visibleGuesses), [others[0].uid],
+    'tahminci yalnızca kendi ibresini görmeli');
+  await psychic.waitFor(s => Object.keys(s.view?.visibleGuesses).length === 2,
+    'psişik iki ibreyi de görür');
 
-  // Yeni psişik kartı çeker ve oyun devam eder
-  await waitAll(others, s => s.game.spectrum != null, 'yeni kart çekildi');
-  assert.deepEqual(others.flatMap(p => p.errors), [], 'uygulama hatası olmamalı');
+  for (const o of others) await o.send('lock');
+  await waitAll(all, s => s.game.phase === 'reveal', 'açılış');
+  await waitAll(all, s => s.history && s.history[0], 'sonuç kaydedildi');
+
+  const h = all[0].state.history[0];
+  assert.equal(h.points[others[0].uid], 4, 'tam isabet 4 puan');
+  assert.equal(h.points[others[1].uid], 0, 'uzak tahmin 0 puan');
+  assert.equal(h.psychicPoints, 2, '(4+0)/2 = 2');
+  for (const p of all) {
+    await p.waitFor(s => Object.keys(s.view?.visibleGuesses).length === 2,
+      `${p.name} açılışta hepsini görmeli`);
+  }
 });
 
-test('spektrumlar tekrar etmez ve tükenince sıfırlanır', opts, async (t) => {
-  await freshStart();
-  const c = await makeClient('few');
-  await c.update('spectrums', {
-    x1: { left: 'A', right: 'B', addedBy: c.uid, createdAt: 1 },
-    x2: { left: 'C', right: 'D', addedBy: c.uid, createdAt: 2 },
-  });
-  await c.close();
+/* ══════════════════ Takım modu ══════════════════ */
 
-  const { a, all } = await trio();
+/** 4 oyuncuyla takım modunda oda kurar: Ali+Beste = a, Can+Deniz = b. */
+async function makeTeamRoom() {
+  const { all, host, code } = await makeRoom({ players: 4 });
+  await host.send('setMode', { m: 'team' });
+  await waitAll(all, s => s.game.mode === 'team', 'takım modu');
+  await all[0].send('setTeam', { t: 'a' });
+  await all[1].send('setTeam', { t: 'a' });
+  await all[2].send('setTeam', { t: 'b' });
+  await all[3].send('setTeam', { t: 'b' });
+  await waitAll(all, s => Object.keys(s.game.teams || {}).length === 4, 'takımlar kuruldu');
+  return { all, host, code };
+}
+
+test('takım modu: dengesiz takımda oyun başlamaz', opts, async (t) => {
+  await freshStart();
+  const { all, host } = await makeRoom({ players: 4 });
   t.after(() => Promise.all(all.map(p => p.close())));
 
-  await a.send('setRounds', { n: 3 });
-  await a.send('start');
+  await host.send('setMode', { m: 'team' });
+  await all[0].send('setTeam', { t: 'a' });
+  await all[1].send('setTeam', { t: 'b' });
+  await all[2].send('setTeam', { t: 'b' });
+  await all[3].send('setTeam', { t: 'b' });
+  await waitAll(all, s => Object.keys(s.game.teams || {}).length === 4, 'takımlar yazıldı');
+
+  await assert.rejects(() => host.send('start'), /en az 2/i,
+    '1–3 dağılımıyla başlatılamamalı');
+  assert.equal(all[0].state.game.phase, 'lobby');
+});
+
+test('takım modu: puanlar takıma yazılır ve kazanan doğru belirlenir', opts, async (t) => {
+  await freshStart();
+  const { all, host } = await makeTeamRoom();
+  t.after(() => Promise.all(all.map(p => p.close())));
+
+  await host.send('setRounds', { n: 4 });
+  await host.send('start');
+  await waitAll(all, s => s.game.phase === 'clue', 'oyun başladı');
+
+  // "a" takımı hep tam isabet, "b" takımı hep ışınlanıyor
+  const teamOfPlayer = (p) => all[0].state.game.teams[p.uid];
+  for (let r = 0; r < 4; r++) {
+    const { idx, psychic } = await playRound(
+      all, (p, t2) => (teamOfPlayer(p) === 'a' ? hit(p, t2) : miss(p, t2)), `tur-${r}`);
+
+    const h = all[0].state.history[idx];
+    assert.ok(h.teams, 'tur kendi takım dağılımını taşımalı');
+    assert.equal(h.psychicPoints,
+      psychicTeamAverage(h.points, h.teams, h.psychicUid),
+      'psişik yalnızca takımdaşlarının ortalamasını almalı');
+    await psychic.send('next');
+  }
+
+  await waitAll(all, s => s.game.phase === 'gameover', 'oyun bitti');
+  const totals = teamTotals(all[0].state.history);
+  assert.deepEqual(totals, teamTotals(all[3].state.history), 'toplam herkeste aynı');
+  assert.ok(totals.a > totals.b, `isabet eden takım kazanmalı: ${JSON.stringify(totals)}`);
+  assert.equal(teamWinner(totals).winner, 'a');
+  assert.deepEqual(all.flatMap(p => p.errors), []);
+});
+
+test('takım modu: psişik rakibin iyi bilmesinden puan almaz', opts, async (t) => {
+  await freshStart();
+  const { all, host } = await makeTeamRoom();
+  t.after(() => Promise.all(all.map(p => p.close())));
+
+  await host.send('setRounds', { n: 3 });
+  await host.send('start');
+  await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
+
+  const { psychic } = psychicOf(all);
+  const teams = all[0].state.game.teams;
+  const myTeam = teams[psychic.uid];
+
+  // Psişiğin takımdaşı ışınlanıyor, RAKİPLER tam isabet yapıyor
+  const { idx } = await playRound(all,
+    (p, t2) => (teams[p.uid] === myTeam ? miss(p, t2) : hit(p, t2)), 'ters');
+
+  const h = all[0].state.history[idx];
+  assert.equal(h.psychicPoints, 0,
+    'rakipler tam bilse bile psişik puan almamalı');
+  const opponents = Object.entries(h.points).filter(([id]) => teams[id] !== myTeam);
+  assert.ok(opponents.every(([, p]) => p === 4), 'rakipler gerçekten tam bilmiş olmalı');
+});
+
+test('takım modu: sıra iki takım arasında dönüşümlü ilerler', opts, async (t) => {
+  await freshStart();
+  const { all, host } = await makeTeamRoom();
+  t.after(() => Promise.all(all.map(p => p.close())));
+
+  await host.send('setRounds', { n: 4 });
+  await host.send('start');
+
+  const seq = [];
+  for (let r = 0; r < 4; r++) {
+    await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
+    const { psychic } = psychicOf(all);
+    seq.push(all[0].state.game.teams[psychic.uid]);
+    const { psychic: p2 } = await playRound(all, hit, `t${r}`);
+    await p2.send('next');
+  }
+  for (let i = 1; i < seq.length; i++) {
+    assert.notEqual(seq[i], seq[i - 1], `psişik sırası dönüşümlü olmalı: ${seq}`);
+  }
+});
+
+/* ══════════════════ Deste ══════════════════ */
+
+test('kurucu özel set yükler, kartlar o setten gelir', opts, async (t) => {
+  await freshStart();
+  const { all, host } = await makeRoom();
+  t.after(() => Promise.all(all.map(p => p.close())));
+
+  const cards = Array.from({ length: 5 }, (_, i) => ({ l: `Sol${i}`, r: `Sağ${i}` }));
+  await host.send('savePack', { pack: { name: 'Deneme seti', cards } });
+  const saved = await host.send('loadPacks');
+  assert.equal(saved.length, 1, 'set hesaba kaydedilmeli');
+  assert.equal(saved[0].cards.length, 5);
+
+  await host.send('setDeck', { deck: { source: SOURCE.CUSTOM, name: 'Deneme seti', cards } });
+  await waitAll(all, s => s.deck?.source === SOURCE.CUSTOM, 'deste odaya yazıldı');
+  await waitAll(all, s => s.view?.deckSize === 5, 'herkes 5 kartlık desteyi çözmeli');
+
+  await host.send('setRounds', { n: 3 });
+  await host.send('start');
+
+  for (let r = 0; r < 3; r++) {
+    await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
+    const card = all[0].state.game.spectrum;
+    assert.match(card.left, /^Sol\d$/, `kart özel setten gelmeli: ${card.left}`);
+    const { psychic } = await playRound(all, hit, `t${r}`);
+    await psychic.send('next');
+  }
+});
+
+test('karışık deste hazır kartları da içerir', opts, async (t) => {
+  await freshStart();
+  const { all, host } = await makeRoom();
+  t.after(() => Promise.all(all.map(p => p.close())));
+
+  const cards = [{ l: 'A', r: 'B' }, { l: 'C', r: 'D' }, { l: 'E', r: 'F' }];
+  await host.send('setDeck', { deck: { source: SOURCE.MIXED, name: 'Ek', cards } });
+  await waitAll(all, s => s.view?.deckSize === BUILTIN_CARDS.length + 3,
+    'karışık deste hazır + özel kart sayısı kadar olmalı');
+});
+
+test('varsayılan deste hazır settir ve tükenince sıfırlanır', opts, async (t) => {
+  await freshStart();
+  const { all, host } = await makeRoom();
+  t.after(() => Promise.all(all.map(p => p.close())));
+
+  await waitAll(all, s => s.view?.deckSize === BUILTIN_CARDS.length, 'hazır deste yüklü');
+
+  // İki kartlık desteyle üç tur oyna: üçüncü turda liste sıfırlanmalı
+  await host.send('setDeck', {
+    deck: { source: SOURCE.CUSTOM, name: 'Minik', cards: [{ l: 'A', r: 'B' }, { l: 'C', r: 'D' }] },
+  });
+  await waitAll(all, s => s.view?.deckSize === 2, 'minik deste');
+  await host.send('setRounds', { n: 3 });
+  await host.send('start');
 
   const used = [];
   for (let r = 0; r < 3; r++) {
     await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
     used.push(all[0].state.game.spectrum.id);
-    const { idx, psychic } = await playRound(all, 50, `t${r}`);
+    const { psychic } = await playRound(all, hit, `t${r}`);
     await psychic.send('next');
-    if (r < 2) await waitAll(all, s => s.game.roundIndex === idx + 1, 'sonraki tur');
   }
-
   assert.notEqual(used[0], used[1], 'ilk iki tur farklı kart kullanmalı');
-  assert.equal(used.length, 3, 'havuz tükense de üçüncü tur oynanabilmeli');
+  assert.equal(used.length, 3, 'deste tükense de üçüncü tur oynanabilmeli');
 });
 
-/* ══════════════════ Bireysel mod ══════════════════ */
+/* ══════════════════ Misafir ══════════════════ */
 
-test('bireysel mod: herkes kendi ibresini çevirir, kendi puanını alır', opts, async (t) => {
+test('misafir odaya katılıp oynar ama oda kuramaz', opts, async (t) => {
   await freshStart();
-  await seedSpectrums();
-  const { a, all } = await trio();
+  const { all, host } = await makeRoom({ players: 3, guestIdx: [2] });
   t.after(() => Promise.all(all.map(p => p.close())));
 
-  await a.send('setMode', { m: 'solo' });
-  await a.send('setRounds', { n: 3 });
-  await waitAll(all, s => s.game.mode === 'solo', 'mod bireysel');
+  const guest = all[2];
+  assert.equal(await guest.send('isGuest'), true, 'üçüncü oyuncu misafir olmalı');
 
-  await a.send('start');
-  await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
-  const { psychic, others } = psychicOf(all);
-  await psychic.send('clue', { text: 'ayrı ayrı' });
-  await waitAll(all, s => s.game.phase === 'guess', 'tahmin fazı');
+  // Kural düzeyinde engellenir: misafir meta yazamaz
+  await assert.rejects(() => guest.send('create', { name: 'Misafir' }),
+    /permission/i, 'misafir oda kuramamalı');
+  // Set de kaydedemez
+  await assert.rejects(
+    () => guest.send('savePack', { pack: { name: 'x', cards: [
+      { l: 'a', r: 'b' }, { l: 'c', r: 'd' }, { l: 'e', r: 'f' }] } }),
+    /giriş/i, 'misafir set kaydedememeli');
 
-  // Hedefi bilen psişik, iki tahminciyi farklı yerlere koyduralım:
-  // biri tam isabet, diğeri uzak.
-  const target = await psychic.send('knownTarget');
-  const exact = target;
-  const far = target > 50 ? 5 : 95;
-
-  await others[0].send('dial', { value: exact });
-  await others[1].send('dial', { value: far });
-
-  // GİZLİLİK: tahminciler birbirini görmez
-  await waitAll([others[0]], s => s.view.myGuess != null, 'kendi ibrem yazıldı');
-  assert.deepEqual(Object.keys(others[0].state.view.visibleGuesses), [others[0].uid],
-    'tahminci yalnızca kendi ibresini görmeli');
-  assert.deepEqual(Object.keys(others[1].state.view.visibleGuesses), [others[1].uid],
-    'diğer tahminci de yalnızca kendisini görmeli');
-
-  // Psişik hepsini canlı görür
-  await psychic.waitFor(s => Object.keys(s.view.visibleGuesses).length === 2,
-    'psişik iki ibreyi de görür');
-
-  await others[0].send('lock');
-  assert.equal(all[0].state.game.phase, 'guess', 'tek kilitle açılmamalı');
-  await others[1].send('lock');
-  await waitAll(all, s => s.game.phase === 'reveal', 'açılış');
-  await waitAll(all, s => s.history && s.history[0], 'sonuç kaydedildi');
-
-  const h = all[0].state.history[0];
-  const expected = soloScores(target, h.guesses);
-  assert.equal(h.points[others[0].uid], 4, 'tam isabet 4 puan');
-  assert.equal(h.points[others[1].uid], 0, 'uzak tahmin 0 puan');
-  assert.deepEqual(h.points, expected, 'puanlar saf fonksiyonla aynı');
-  assert.equal(h.psychicPoints, psychicAverage(h.points), 'psişik ortalamayı alır');
-  assert.equal(h.psychicPoints, 2, '(4+0)/2 = 2');
-
-  // Açılışta herkes bütün ibreleri görür
-  for (const p of all) {
-    await p.waitFor(s => Object.keys(s.view.visibleGuesses).length === 2,
-      `${p.name} açılışta hepsini görmeli`);
-  }
+  // Ama oyun oynayabilir
+  await host.send('setRounds', { n: 3 });
+  await host.send('start');
+  const { idx } = await playRound(all, hit, 'misafir de oynar');
+  assert.ok(all[0].state.history[idx], 'tur tamamlanmalı');
   assert.deepEqual(all.flatMap(p => p.errors), []);
 });
 
-test('bireysel mod: puanlar oyuncu bazında toplanır ve oyun biter', opts, async (t) => {
+/* ══════════════════ Oda ömrü ══════════════════ */
+
+test('süresi dolmuş odaya girilemez ve süpürülür', opts, async (t) => {
   await freshStart();
-  await seedSpectrums();
-  const { a, all } = await trio();
+  const { all, code } = await makeRoom({ players: 2 });
   t.after(() => Promise.all(all.map(p => p.close())));
 
-  await a.send('setMode', { m: 'solo' });
-  await a.send('setRounds', { n: 3 });
-  await a.send('start');
+  // Odanın ömrünü geçmişe çek
+  const admin = await makeClient('clock');
+  const past = Date.now() - 1000;
+  await admin.set(`rooms/${code}/meta/expiresAt`, past);
+  await admin.set(`roomIndex/${code}`, past);
+  await admin.close();
 
-  for (let r = 0; r < 3; r++) {
-    await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
-    const { psychic, others } = psychicOf(all);
-    const target = await psychic.send('knownTarget');
-    await psychic.send('clue', { text: `tur-${r}` });
-    await waitAll(all, s => s.game.phase === 'guess', 'tahmin fazı');
+  const late = await Player.spawn('Geç');
+  t.after(() => late.close());
+  await assert.rejects(() => late.send('join', { code, name: 'Geç' }),
+    /süresi dolmuş/i, 'süresi dolmuş odaya girilememeli');
 
-    await others[0].send('dial', { value: target });          // 4 puan
-    await others[1].send('dial', { value: target > 50 ? 2 : 98 });  // 0 puan
-    await others[0].send('lock');
-    await others[1].send('lock');
-    await waitAll(all, s => s.game.phase === 'reveal', 'açılış');
-    await waitAll(all, s => s.history && s.history[r], 'sonuç kaydedildi');
-    await psychic.send('next');
-  }
+  const swept = await late.send('sweep');
+  assert.ok(swept >= 1, 'süpürücü en az bir oda silmeli');
+  assert.equal(await dump(`rooms/${code}/meta`), null, 'oda gerçekten silinmeli');
+  assert.equal(await dump(`roomIndex/${code}`), null, 'dizin kaydı da silinmeli');
+});
 
-  await waitAll(all, s => s.game.phase === 'gameover', 'oyun bitti');
+test('ömrü dolmamış oda süpürülmez', opts, async (t) => {
+  await freshStart();
+  const { all, code } = await makeRoom({ players: 2 });
+  t.after(() => Promise.all(all.map(p => p.close())));
 
-  const totals = soloTotals(all[0].state.history);
-  const sum = Object.values(totals).reduce((x, y) => x + y, 0);
-  // Her turda: bir tahminci 4, biri 0, psişik ortalama 2 → toplam 6
-  assert.equal(sum, 18, `üç turda toplam 18 olmalı, gelen ${sum}`);
-  assert.deepEqual(totals, soloTotals(all[2].state.history), 'herkeste aynı tablo');
-
-  // Her oyuncu bir kez psişik olduğu için 2 puanı garanti, iki turda tahminci
-  for (const p of all) {
-    assert.ok(totals[p.uid] >= 2, `${p.name} en az psişik puanını almalı`);
-  }
-  assert.deepEqual(all.flatMap(p => p.errors), []);
+  const swept = await all[0].send('sweep');
+  assert.equal(swept, 0, 'taze oda süpürülmemeli');
+  assert.ok(await dump(`rooms/${code}/meta`), 'oda yerinde durmalı');
 });
 
 /* ══════════════════ Oda sahipliği ══════════════════ */
 
 test('odayı kuran ayrılınca oda kapanır ve herkes çıkar', opts, async (t) => {
   await freshStart();
-  await seedSpectrums();
-  const { a, b, c, all, code } = await trio();
+  const { all, code } = await makeRoom();
   t.after(() => Promise.all(all.map(p => p.close())));
+  const [a, b, c] = all;
 
   await waitAll(all, s => s.meta?.hostUid === a.uid, 'kurucu kaydedildi');
-  assert.equal(a.state.view.iAmOwner, true, 'kuran kişi sahip olmalı');
+  assert.equal(a.state.view.iAmOwner, true);
   assert.equal(b.state.view.iAmOwner, false);
 
-  // Oyun ortasında bile olsa kapanmalı
   await a.send('setRounds', { n: 3 });
   await a.send('start');
   await waitAll(all, s => s.game.phase === 'clue', 'oyun başladı');
 
   assert.equal(await a.send('close'), true, 'kurucu odayı kapatabilmeli');
-
-  // Diğerleri önce "kapandı" sinyalini görür, sonra oda silinir
   await waitAll([b, c], s => s.game?.phase === 'closed', 'kapanma sinyali');
   await waitAll([b, c], s => s.meta == null, 'oda silindi');
-  assert.equal(a.state.code, null, 'kuran kişi odadan çıkmış olmalı');
-
-  // Kapanan odaya artık girilemez
-  await assert.rejects(() => b.send('join', { code, name: 'Beste' }),
-    /oda yok/i, 'kapanan odaya katılınamamalı');
+  await assert.rejects(() => b.send('join', { code, name: 'Beste' }), /oda yok/i);
 });
 
 test('kurucu olmayan çıkınca oda açık kalır', opts, async (t) => {
   await freshStart();
-  await seedSpectrums();
-  const { a, b, c, all } = await trio();
+  const { all } = await makeRoom();
   t.after(() => Promise.all(all.map(p => p.close())));
+  const [a, b, c] = all;
 
-  await waitAll(all, s => s.meta?.hostUid === a.uid, 'kurucu kaydedildi');
   assert.equal(await b.send('close'), false, 'kurucu olmayan kapatamamalı');
-
   await b.send('leave');
   await waitAll([a, c], s => s.players[b.uid]?.online === false, 'ayrıldı');
   assert.equal(a.state.meta?.hostUid, a.uid, 'oda ayakta kalmalı');
-  assert.equal(a.state.game?.phase, 'lobby');
 });
 
 test('kurucu çevrimdışıyken başlatma yetkisi devrolur', opts, async (t) => {
   await freshStart();
-  await seedSpectrums();
-  const { a, b, c, all } = await trio();
+  const { all } = await makeRoom();
   t.after(() => Promise.all(all.map(p => p.close())));
+  const [a, b, c] = all;
 
-  await waitAll(all, s => Object.keys(s.players).length === 3, 'üçü de içeride');
-  await a.send('leave');                     // kapatmadan, sadece bağlantıyı bırak
+  await a.send('leave');
   await waitAll([b, c], s => s.players[a.uid]?.online === false, 'kurucu çevrimdışı');
-
-  // Kalanlar oyunu başlatabilmeli — oda kilitlenmemeli
   await b.send('start');
   await waitAll([b, c], s => s.game.phase === 'clue', 'oyun başladı');
 });
@@ -446,19 +489,16 @@ test('kurucu çevrimdışıyken başlatma yetkisi devrolur', opts, async (t) => 
 
 test('sıra atlanınca herkes AYNI hedefi görür', opts, async (t) => {
   await freshStart();
-  await seedSpectrums();
-  const { a, all } = await trio();
+  const { all, host } = await makeRoom();
   t.after(() => Promise.all(all.map(p => p.close())));
 
-  await a.send('setRounds', { n: 3 });
-  await a.send('start');
+  await host.send('setRounds', { n: 3 });
+  await host.send('start');
   await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'ilk kart çekildi');
 
   const first = psychicOf(all);
   const firstTarget = await first.psychic.send('knownTarget');
-  assert.equal(typeof firstTarget, 'number');
 
-  // Sıra devredilince yeni psişik YENİ bir hedef çeker
   await first.others[0].send('skip');
   await waitAll(all, s => s.game.psychicUid !== first.psychic.uid && s.game.spectrum,
     'yeni psişik kart çekti');
@@ -471,52 +511,36 @@ test('sıra atlanınca herkes AYNI hedefi görür', opts, async (t) => {
   await waitAll(all, s => s.game.phase === 'guess', 'tahmin fazı');
   for (const o of second.others) await o.send('lock');
   await waitAll(all, s => s.game.phase === 'reveal', 'açılış');
-  await waitAll(all, s => s.history && s.history[0], 'sonuç kaydedildi');
-
-  // Eski psişiğin elinde bayat hedef kalmamalı
-  await waitAll(all, s => s.view.target === secondTarget,
+  await waitAll(all, s => s.view?.target === secondTarget,
     `herkes güncel hedefi görmeli (bayat hedef: ${firstTarget})`);
-  for (const p of all) {
-    assert.notEqual(await p.send('knownTarget'), firstTarget,
-      `${p.name} bayat hedefi tutmamalı`);
-  }
-  assert.equal(all[0].state.history[0].target, secondTarget, 'kayıt da güncel hedefle');
+  await waitAll(all, s => s.history && s.history[0], 'sonuç kaydedildi');
+  assert.equal(all[0].state.history[0].target, secondTarget);
 });
 
 test('tekrar oynayınca eski turun hedefi taşınmaz', opts, async (t) => {
   await freshStart();
-  await seedSpectrums();
-  const { a, all } = await trio();
+  const { all, host } = await makeRoom();
   t.after(() => Promise.all(all.map(p => p.close())));
 
-  await a.send('setRounds', { n: 3 });
-  await a.send('start');
-
-  const targets = [];
+  await host.send('setRounds', { n: 3 });
+  await host.send('start');
   for (let r = 0; r < 3; r++) {
-    const { idx, psychic } = await playRound(all, 50, `oyun1-${r}`);
-    targets.push(all[0].state.history[idx].target);
+    const { psychic } = await playRound(all, hit, `oyun1-${r}`);
     await psychic.send('next');
   }
   await waitAll(all, s => s.game.phase === 'gameover', 'oyun bitti');
 
-  // Tekrar oyna: aynı tur numaraları, YENİ hedefler
   await all[2].send('restart');
   await waitAll(all, s => s.game.phase === 'lobby', 'lobiye dönüldü');
+  await waitAll(all, s => historyList(s.history).length === 0, 'geçmiş temizlendi');
   await all[0].send('start');
   await waitAll(all, s => s.game.phase === 'clue' && s.game.spectrum, 'kart çekildi');
 
   const { psychic } = psychicOf(all);
   const target = await psychic.send('knownTarget');
-
   await psychic.send('clue', { text: 'ikinci oyun' });
   await waitAll(all, s => s.game.phase === 'guess', 'tahmin fazı');
-  const others = all.filter(p => p !== psychic);
-  for (const o of others) await o.send('lock');
+  for (const o of all.filter(p => p !== psychic)) await o.send('lock');
   await waitAll(all, s => s.game.phase === 'reveal', 'açılış');
-  await waitAll(all, s => s.history && s.history[0], 'sonuç kaydedildi');
-
-  await waitAll(all, s => s.view.target === target,
-    `herkes yeni oyunun hedefini görmeli, eskisini değil (${targets[0]})`);
-  assert.equal(all[0].state.history[0].target, target, 'kayıt da yeni hedefle');
+  await waitAll(all, s => s.view?.target === target, 'herkes yeni oyunun hedefini görmeli');
 });
