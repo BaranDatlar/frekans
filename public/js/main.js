@@ -60,7 +60,7 @@ export async function start() {
 }
 
 /** Kimlik değişince: ekranı ve kişiye bağlı verileri tazele. */
-function onUserChanged(user) {
+async function onUserChanged(user) {
   if (unsubPacks) { unsubPacks(); unsubPacks = null; }
   myPacks = [];
 
@@ -70,7 +70,7 @@ function onUserChanged(user) {
     return;
   }
 
-  $('#input-name').value = savedName();
+  const nameReady = applyName();
   $('#account-label').textContent = isGuest()
     ? 'Misafir olarak giriş yaptın'
     : (currentUser()?.email || providerName() || 'Giriş yapıldı');
@@ -82,6 +82,7 @@ function onUserChanged(user) {
 
   sweepExpiredRooms().catch(() => {});
   render();
+  await nameReady;          // bağlantıyla gelindiyse ad hazır olsun
   maybeAutoJoin();
 }
 
@@ -90,13 +91,37 @@ function savedName() {
   return stored || providerName();
 }
 
+/**
+ * Ad alanını doldurur, öncelik sırasıyla:
+ *   1. bu cihazda kayıtlı ad
+ *   2. hesaba kaydedilmiş takma ad (telefon değiştiren yeniden yazmasın)
+ *   3. Google profil adı
+ * Hesaptan gelen ad ağdan geldiği için, o sırada kullanıcı bir şey yazdıysa
+ * ya da alan artık profil adında değilse üzerine yazılmaz.
+ */
+async function applyName() {
+  const input = $('#input-name');
+  if (!input) return;
+  const local = (localStorage.getItem(NAME_KEY) || '').trim();
+  if (local) { input.value = local; return; }
+
+  const fallback = providerName();
+  input.value = fallback;
+  if (!canSavePacks()) return;
+
+  const profile = await packs.loadProfileName();
+  if (profile && document.activeElement !== input && input.value === fallback) {
+    input.value = profile;
+  }
+}
+
 let autoJoined = false;
 async function maybeAutoJoin() {
   if (autoJoined || state.code) return;
   const code = normalizeCode(new URLSearchParams(location.search).get('oda') || '');
   if (!code) return;
   $('#input-code').value = code;
-  const name = savedName();
+  const name = currentName() || savedName();
   if (!name) return;
   autoJoined = true;
   await doJoin(code, name);

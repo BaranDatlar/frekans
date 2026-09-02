@@ -99,6 +99,21 @@ function rememberAccount(user) {
 const appleProvider = () => new OAuthProvider('apple.com');
 
 /**
+ * Popup girişi bu tarayıcılarda güvenilmez: iOS'ta tüm tarayıcılar WebKit,
+ * Safari çapraz-origin depolamayı kısıyor, uygulama içi tarayıcılar (Instagram,
+ * Facebook, X…) popup'ı ya engelliyor ya da sonucu açan sayfaya döndürmüyor.
+ * Bu ortamlarda doğrudan yönlendirmeli akışa gidilir.
+ */
+function popupUnreliable() {
+  const ua = navigator.userAgent || '';
+  const iOS = /iP(hone|ad|od)/.test(ua) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const safari = /safari/i.test(ua) && !/chrome|chromium|crios|fxios|edg/i.test(ua);
+  const inApp = /(FBAN|FBAV|Instagram|Line|Twitter|MicroMessenger|WebView|; wv\))/i.test(ua);
+  return iOS || safari || inApp;
+}
+
+/**
  * Açılışta bir kez çağrılır. Yönlendirme dönüşünü işler ve ilk kimlik
  * durumunu bekler.
  * @returns {Promise<import('firebase/auth').User|null>}
@@ -168,6 +183,14 @@ async function signInWith(provider) {
   const guest = auth.currentUser?.isAnonymous ? auth.currentUser : null;
   // Hesap oturumu kalıcı olsun (misafirinki sekmeye özeldi).
   await setPersistence(auth, browserLocalPersistence).catch(() => {});
+
+  // Popup'ın çalışmayacağı tarayıcılarda hiç denemeden yönlendirmeye git.
+  if (popupUnreliable()) {
+    if (guest) await linkWithRedirect(guest, provider);
+    else await signInWithRedirect(auth, provider);
+    return null;   // sayfa yönlendiriliyor
+  }
+
   try {
     if (guest) {
       // Misafiri yükselt: aynı uid korunur.

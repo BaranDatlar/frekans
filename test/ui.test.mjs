@@ -34,12 +34,13 @@ async function newPlayer(browser, name, errors) {
 }
 
 /** Gerçek Google popup'ı otomatikleştirilemez; emülatörün sahte belirteci. */
-async function signInGoogle(page, name) {
-  await page.evaluate(async ({ sub, name: n }) => {
+async function signInGoogle(page, name, sub) {
+  await page.evaluate(async ({ sub: s, name: n }) => {
     const m = await import('/js/auth.js');
-    await m.signInFakeGoogle({ sub, name: n });
-  }, { sub: `${name}-${Date.now()}-${++seq}`, name });
+    await m.signInFakeGoogle({ sub: s, name: n });
+  }, { sub: sub || `${name}-${Date.now()}-${++seq}`, name });
   await page.waitForSelector('#screen-home.active', { timeout: 20000 });
+  return sub;
 }
 
 async function signInGuest(page) {
@@ -450,6 +451,30 @@ test('hesapla giren çıkış yapmadıkça giriş ekranı görmez', opts, async 
 
   await p.reload();
   await p.waitForSelector('#screen-login.active', { timeout: 20000 });
+
+  assert.deepEqual(errors, [], 'konsolda hata olmamalı');
+});
+
+test('takma ad hesaba kaydedilir, başka cihazda geri gelir', opts, async (t) => {
+  await wipe();
+  const errors = [];
+  const browser = await chromium.launch({ channel: 'chrome' });
+  t.after(() => browser.close());
+
+  const sub = `gezgin-${Date.now()}`;
+  const first = await newPlayer(browser, 'Ali', errors);
+  await signInGoogle(first, 'Ali', sub);
+
+  // Kendi takma adını yaz ve odaya gir (ad böyle kaydediliyor)
+  await first.fill('#input-name', 'Baron');
+  await first.click('#btn-create');
+  await first.waitForSelector('#screen-lobby.active', { timeout: 20000 });
+
+  // Aynı hesap, başka cihaz (temiz bağlam)
+  const second = await newPlayer(browser, 'Ali2', errors);
+  await signInGoogle(second, 'Ali', sub);
+  await second.waitForFunction(() =>
+    document.querySelector('#input-name')?.value === 'Baron', null, { timeout: 15000 });
 
   assert.deepEqual(errors, [], 'konsolda hata olmamalı');
 });
