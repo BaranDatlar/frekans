@@ -88,8 +88,8 @@ test('giriş ekranı: misafir katılabilir, oda kuramaz', opts, async (t) => {
   // Giriş yapılmadan hiçbir oyun ekranı görünmemeli
   assert.equal(await host.locator('#screen-home.active').count(), 0,
     'kimlik çözülmeden ana ekran görünmemeli');
-  assert.equal(await host.locator('#btn-apple').isVisible(), false,
-    'Apple kapalıyken düğmesi görünmemeli');
+  assert.equal(await host.locator('#btn-apple').count(), 0,
+    'Apple kapalıyken düğmesi sayfada hiç olmamalı');
 
   await signInGuest(guest);
   await guest.waitForFunction(() => document.querySelector('#btn-create')?.disabled === true,
@@ -389,6 +389,67 @@ test('odayı kuran çıkınca oda kapanır, diğerleri açığa düşer', opts, 
   await p2.waitForFunction(() =>
     /oda yok|kapatıldı/i.test(document.querySelector('#home-status')?.textContent || ''),
     null, { timeout: 15000 });
+
+  assert.deepEqual(errors, [], 'konsolda hata olmamalı');
+});
+
+/* ══════════════════ Oturum kalıcılığı ══════════════════ */
+
+test('misafir oturumu siteye dönünce bitmeli, giriş ekranı çıkmalı', opts, async (t) => {
+  await wipe();
+  const errors = [];
+  const browser = await chromium.launch({ channel: 'chrome' });
+  t.after(() => browser.close());
+
+  const p = await newPlayer(browser, 'Misafir', errors);
+  await signInGuest(p);
+  assert.match(await p.textContent('#account-label'), /misafir/i);
+
+  // Aynı sekmede yenileme oturumu korumalı (oyunun ortasında düşmesin)
+  await p.reload();
+  await p.waitForSelector('#screen-home.active', { timeout: 20000 });
+
+  // Siteye yeniden gelmek (yeni sekme/oturum) giriş ekranı göstermeli
+  await p.evaluate(() => sessionStorage.clear());
+  await p.reload();
+  await p.waitForSelector('#screen-login.active', { timeout: 20000 });
+  assert.equal(await p.locator('#screen-home.active').count(), 0,
+    'misafir olarak otomatik girilmemeli');
+
+  assert.deepEqual(errors, [], 'konsolda hata olmamalı');
+});
+
+test('hesapla giren çıkış yapmadıkça giriş ekranı görmez', opts, async (t) => {
+  await wipe();
+  const errors = [];
+  const browser = await chromium.launch({ channel: 'chrome' });
+  t.after(() => browser.close());
+
+  const p = await newPlayer(browser, 'Ali', errors);
+  await signInGoogle(p, 'Ali');
+
+  // Sekme oturumu temizlense bile hesap girişi kalıcı olmalı
+  await p.evaluate(() => sessionStorage.clear());
+  await p.reload();
+  await p.waitForSelector('#screen-home.active', { timeout: 20000 });
+  assert.equal(await p.locator('#screen-login.active').count(), 0,
+    'hesap girişi kalıcı olmalı');
+  assert.equal(await p.locator('#btn-create').isDisabled(), false);
+
+  // Son kullanılan hesap hatırlanmalı (bir dahaki girişte hesap sorulmasın)
+  assert.ok(await p.evaluate(() => localStorage.getItem('frekans.lastEmail')),
+    'son hesap hatırlanmalı');
+  assert.equal(await p.evaluate(() => localStorage.getItem('frekans.chooseAccount')), null,
+    'çıkış yapılmadan hesap seçtirme bayrağı olmamalı');
+
+  // Çıkış yapınca giriş ekranına dönmeli ve bir dahaki sefere hesap sorulmalı
+  await p.click('#btn-signout');
+  await p.waitForSelector('#screen-login.active', { timeout: 20000 });
+  assert.equal(await p.evaluate(() => localStorage.getItem('frekans.chooseAccount')), '1',
+    'çıkıştan sonra hesap seçimi açılmalı');
+
+  await p.reload();
+  await p.waitForSelector('#screen-login.active', { timeout: 20000 });
 
   assert.deepEqual(errors, [], 'konsolda hata olmamalı');
 });

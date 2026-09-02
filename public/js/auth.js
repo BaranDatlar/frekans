@@ -11,10 +11,40 @@ import {
   GoogleAuthProvider, OAuthProvider,
   signInWithPopup, signInWithRedirect, getRedirectResult, signInWithCredential,
   signInAnonymously, linkWithPopup, linkWithRedirect, signOut, onAuthStateChanged,
+  setPersistence, browserLocalPersistence, browserSessionPersistence,
 } from 'firebase/auth';
 import { auth, USE_EMULATOR } from './firebase.js';
 
-/** Açık giriş yöntemleri. Apple, Developer hesabı alınınca true yapılır. */
+/**
+ * Oturum kalıcılığı iki türlü:
+ *  · Hesap girişi  → browserLocalPersistence. Tarayıcı kapansa da açık kalır;
+ *    kullanıcı çıkış yapmadıkça bir daha giriş ekranı görmez.
+ *  · Misafir girişi → browserSessionPersistence. Sekmeye özeldir; siteye
+ *    yeniden gelindiğinde giriş ekranı çıkar, kimse farkında olmadan
+ *    misafir olarak içeri düşmez.
+ */
+const EMAIL_KEY = 'frekans.lastEmail';   // sonraki girişte hesap sormamak için
+const CHOOSE_KEY = 'frekans.chooseAccount';
+const GUEST_KEY = 'frekans.guestSession';
+
+const ls = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* depolama kapalı */ } },
+  del(k) { try { localStorage.removeItem(k); } catch { /* yoksay */ } },
+};
+const guestMarker = {
+  has() { try { return sessionStorage.getItem(GUEST_KEY) === '1'; } catch { return false; } },
+  set() { try { sessionStorage.setItem(GUEST_KEY, '1'); } catch { /* yoksay */ } },
+  clear() { try { sessionStorage.removeItem(GUEST_KEY); } catch { /* yoksay */ } },
+};
+
+/**
+ * Açık giriş yöntemleri.
+ * Apple kapalı ve düğmesi sayfada yok. Açmak için: Apple Developer hesabıyla
+ * Services ID + alan adı doğrulaması yapılır, Firebase'de Apple sağlayıcısı
+ * açılır, buradaki bayrak true edilir ve giriş ekranına düğme eklenir
+ * (signInApple hazır bekliyor).
+ */
 export const PROVIDERS = {
   google: true,
   apple: false,
@@ -49,9 +79,21 @@ function publish() { for (const fn of [...listeners]) fn(_user); }
 
 function googleProvider() {
   const p = new GoogleAuthProvider();
-  // Hesap seçtir: aynı tarayıcıda birden çok Google hesabı olanlar takılmasın.
-  p.setCustomParameters({ prompt: 'select_account' });
+  // Bir kez giren kişi tekrar hesap seçmek zorunda kalmasın: son kullandığı
+  // adres ipucu olarak gönderilir, Google sessizce onunla devam eder.
+  // Yalnızca kullanıcı ÇIKIŞ yaptıysa hesap seçtirilir.
+  if (ls.get(CHOOSE_KEY)) p.setCustomParameters({ prompt: 'select_account' });
+  else {
+    const hint = ls.get(EMAIL_KEY);
+    if (hint) p.setCustomParameters({ login_hint: hint });
+  }
   return p;
+}
+
+/** Girişten sonra: bir dahaki sefere hesap sorulmasın. */
+function rememberAccount(user) {
+  ls.del(CHOOSE_KEY);
+  if (user?.email) ls.set(EMAIL_KEY, user.email);
 }
 
 const appleProvider = () => new OAuthProvider('apple.com');
@@ -71,15 +113,32 @@ export async function initAuth() {
 
   return new Promise((resolve) => {
     let settled = false;
-    onAuthStateChanged(auth, (user) => {
+    const settle = (user) => {
       _user = user;
       _ready = true;
       publish();
       if (!settled) { settled = true; resolve(user); }
-    }, () => {
-      _ready = true;
-      if (!settled) { settled = true; resolve(null); }
-    });
+    };
+
+    // Yalnızca AÇILIŞTAKİ oturuma bakılır. Bu denetimi her kimlik değişiminde
+    // yapmak, sessionStorage'a erişilemeyen ortamlarda (Node, depolaması kapalı
+    // tarayıcı) yeni açılan misafir oturumunu da anında düşürürdü.
+    let firstCheck = true;
+    onAuthStateChanged(auth, async (user) => {
+      if (firstCheck) {
+        firstCheck = false;
+        // Bu sekmeye ait olmayan misafir oturumu (önceki ziyaretten kalmış)
+        // kabul edilmez: kimse farkında olmadan misafir olarak içeri düşmesin.
+        if (user?.isAnonymous && !guestMarker.has()) {
+          try { await signOut(auth); return; }   // sonraki tetikleme null gelir
+          catch { /* çıkış yapılamadıysa mevcut oturumla devam */ }
+        }
+      }
+      settle(user);
+    }, () => settle(null));
+
+    // Kimlik hiç çözülmezse uygulama açılışta asılı kalmasın
+    setTimeout(() => settle(auth.currentUser ?? null), 15000);
     if (redirect?.user) { /* onAuthStateChanged zaten tetiklenecek */ }
   });
 }
@@ -107,13 +166,18 @@ export async function signInApple() {
 
 async function signInWith(provider) {
   const guest = auth.currentUser?.isAnonymous ? auth.currentUser : null;
+  // Hesap oturumu kalıcı olsun (misafirinki sekmeye özeldi).
+  await setPersistence(auth, browserLocalPersistence).catch(() => {});
   try {
     if (guest) {
       // Misafiri yükselt: aynı uid korunur.
       const res = await linkWithPopup(guest, provider);
+      guestMarker.clear();
+      rememberAccount(res.user);
       return res.user;
     }
     const res = await signInWithPopup(auth, provider);
+    rememberAccount(res.user);
     return res.user;
   } catch (err) {
     const code = err?.code || '';
@@ -125,6 +189,8 @@ async function signInWith(provider) {
         || GoogleAuthProvider.credentialFromError(err);
       if (cred) {
         const res = await signInWithCredential(auth, cred);
+        guestMarker.clear();
+        rememberAccount(res.user);
         return res.user;
       }
     }
@@ -137,21 +203,29 @@ async function signInWith(provider) {
       return null;   // sayfa yönlendiriliyor
     }
 
+    // Yükseltme başarısızsa misafir oturumu yine sekmeye özel kalsın
+    if (guest) await setPersistence(auth, browserSessionPersistence).catch(() => {});
     throw new Error(friendlyAuthError(err));
   }
 }
 
-/** Misafir girişi. */
+/** Misafir girişi. Oturum sekmeye özeldir, siteye dönünce giriş ekranı çıkar. */
 export async function signInGuest() {
   try {
+    await setPersistence(auth, browserSessionPersistence).catch(() => {});
+    guestMarker.set();
     const res = await signInAnonymously(auth);
     return res.user;
   } catch (err) {
+    guestMarker.clear();
     throw new Error(friendlyAuthError(err));
   }
 }
 
 export async function signOutUser() {
+  // Bilerek çıkan kişi bir dahaki girişte hesabını seçebilsin.
+  ls.set(CHOOSE_KEY, '1');
+  guestMarker.clear();
   await signOut(auth);
 }
 
@@ -167,17 +241,22 @@ export async function signInFakeGoogle({ sub = 'test-user', email, name = 'Test'
   const mail = email || `${String(sub).toLowerCase().replace(/[^a-z0-9]+/g, '-')}@ornek.test`;
   const token = JSON.stringify({ sub, email: mail, email_verified: true, name });
   const cred = GoogleAuthProvider.credential(token);
+  await setPersistence(auth, browserLocalPersistence).catch(() => {});
   const guest = auth.currentUser?.isAnonymous ? auth.currentUser : null;
   if (guest) {
     try {
       const { linkWithCredential } = await import('firebase/auth');
       const res = await linkWithCredential(guest, cred);
+      guestMarker.clear();
+      rememberAccount(res.user);
       return res.user;
     } catch (err) {
       if (err?.code !== 'auth/credential-already-in-use') throw err;
     }
   }
   const res = await signInWithCredential(auth, cred);
+  guestMarker.clear();
+  rememberAccount(res.user);
   return res.user;
 }
 

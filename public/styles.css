@@ -335,7 +335,6 @@ input[type=range] { accent-color: var(--accent); height: var(--tap); }
   background: #fff; color: #1f2328; border-color: #fff; font-weight: 600;
 }
 .btn.provider .gicon { width: 20px; height: 20px; flex-shrink: 0; }
-#btn-apple { background: #000; color: #fff; border-color: #333; }
 .fineprint {
   color: #6b7688; font-size: 12.5px; line-height: 1.6; margin: 4px 0 0; text-align: center;
 }

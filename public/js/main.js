@@ -1,9 +1,9 @@
 // Uygulamanın kablolaması: kimlik kapısı, ekranlar, oyun sahnesinin çizimi.
 
 import {
-  initAuth, onUser, signInGoogle, signInApple, signInGuest, signOutUser,
+  initAuth, onUser, signInGoogle, signInGuest, signOutUser,
   currentUser, isGuest, canCreateRooms, canSavePacks, providerName,
-  PROVIDERS, takeRedirectError,
+  takeRedirectError,
 } from './auth.js';
 import {
   state, subscribe, createRoom, joinRoom, leaveRoom, closeRoom, normalizeCode,
@@ -40,9 +40,6 @@ let joinedAt = 0;
 
 export async function start() {
   await initAuth();
-
-  const apple = $('#btn-apple');
-  if (apple) apple.hidden = !PROVIDERS.apple;
 
   dial = new Dial($('#dial'), {
     onInput: (v) => game.pushDial(v),
@@ -110,8 +107,6 @@ async function maybeAutoJoin() {
 function wireLogin() {
   $('#btn-google').addEventListener('click', () =>
     guarded('#login-status', '#btn-google', () => signInGoogle()));
-  $('#btn-apple').addEventListener('click', () =>
-    guarded('#login-status', '#btn-apple', () => signInApple()));
   $('#btn-guest').addEventListener('click', () =>
     guarded('#login-status', '#btn-guest', () => signInGuest()));
 }

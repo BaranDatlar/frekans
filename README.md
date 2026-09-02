@@ -83,6 +83,21 @@ kısıt yalnızca arayüzde değil, güvenlik kurallarında da uygulanır.
 Misafirken Google'a geçersen **aynı kimlik korunur**: oyunun ortasında
 odandan düşmezsin.
 
+Oturumlar iki türlü saklanır:
+
+| | Nerede | Sonuç |
+|---|---|---|
+| Hesap girişi | Kalıcı (localPersistence) | Çıkış yapmadıkça bir daha giriş ekranı görmezsin; hesap da tekrar sorulmaz |
+| Misafir | Sekmeye özel (sessionPersistence) | Sayfayı yenilemek oturumu korur, siteye yeniden gelmek giriş ekranını getirir |
+
+Misafir oturumunun kalıcı olmaması bilinçli: yoksa siteyi bir kez misafir
+olarak açan herkes sonraki ziyaretlerinde farkında olmadan misafir olarak
+içeri düşüyor ve giriş ekranını hiç görmüyordu.
+
+Google girişinde hesap seçtirilmez; son kullanılan adres ipucu olarak
+gönderilir. Yalnızca kullanıcı **çıkış** yaptıysa bir dahaki girişte hesap
+seçme ekranı açılır.
+
 Odayı kuran çıkınca oda kapanır ve silinir. Her oda ayrıca **24 saat**
 sonra sona erer: süresi dolmuş odaya girilemez ve uygulamayı açan ilk kişi
 onu veritabanından siler.

@@ -9,7 +9,7 @@
 const RELOAD_FLAG = 'frekans.reloaded';
 
 /** Yeni sürümde olması gereken düğümler. Yoksa sayfa bayattır. */
-const REQUIRED = ['#screen-login', '#btn-google', '#screen-packs', '#team-picker'];
+const REQUIRED = ['#screen-login', '#btn-google', '#btn-guest', '#screen-packs', '#team-picker'];
 
 function pageIsStale() {
   return REQUIRED.some(sel => !document.querySelector(sel));
