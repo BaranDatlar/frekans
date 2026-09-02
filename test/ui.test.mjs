@@ -26,6 +26,9 @@ async function newPlayer(browser, name, errors) {
   page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
   await page.goto(BASE + '/');
   await page.waitForSelector('#screen-login.active', { timeout: 20000 });
+  // Sayfa/betik sürümü uyuşmazsa app.js kendini tazeler; normalde olmamalı.
+  assert.equal(new URL(page.url()).searchParams.get('v'), null,
+    'sayfa bayat sayılıp yeniden yüklenmemeli');
   page.playerName = name;
   return page;
 }

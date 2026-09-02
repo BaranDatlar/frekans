@@ -41,7 +41,8 @@ let joinedAt = 0;
 export async function start() {
   await initAuth();
 
-  $('#btn-apple').hidden = !PROVIDERS.apple;
+  const apple = $('#btn-apple');
+  if (apple) apple.hidden = !PROVIDERS.apple;
 
   dial = new Dial($('#dial'), {
     onInput: (v) => game.pushDial(v),

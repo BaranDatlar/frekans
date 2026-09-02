@@ -43,6 +43,16 @@ async function cleanup() {
   await admin(`roomIndex/${CODE}`, { method: 'DELETE' });
 }
 
+// Kök adresin önbellek başlığı: `/` yolu "**/*.html" kalıbına uymadığı için
+// bir kez 1 saat önbelleklenmiş ve eski HTML yeni JS ile eşleşip uygulamayı
+// çökertmişti. Aynı hataya bir daha düşmeyelim.
+for (const path of ['/', '/index.html', '/js/main.js']) {
+  const res = await fetch(BASE + path, { cache: 'no-store' });
+  const cc = res.headers.get('cache-control') || '';
+  assert.match(cc, /no-cache/, `${path} önbelleklenmemeli, gelen: "${cc}"`);
+}
+console.log('✔ önbellek başlıkları doğru (kök dahil)');
+
 await setupRoom();
 console.log('test odası kuruldu:', CODE);
 

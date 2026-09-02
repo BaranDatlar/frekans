@@ -1,16 +1,47 @@
-// İnce başlatıcı. Asıl uygulama main.js'te; buradan dinamik import edilir ki
-// Firebase ayarları eksikse (config.js doldurulmamışsa) beyaz ekran yerine
-// anlaşılır bir mesaj gösterebilelim.
+// İnce başlatıcı.
+//
+// İki işi var:
+//  1. Sayfa ile betiklerin sürümü uyuşmuyorsa (tarayıcı eski HTML'i
+//     önbellekten, yeni JS'i ağdan almışsa) kendini bir kez tazeler.
+//  2. Asıl uygulamayı dinamik import eder ki Firebase ayarları eksikse
+//     beyaz ekran yerine anlaşılır bir mesaj çıksın.
 
-document.querySelector('#screen-boot').classList.add('active');
+const RELOAD_FLAG = 'frekans.reloaded';
 
-try {
-  const { start } = await import('./main.js');
-  await start();
-} catch (err) {
-  console.error(err);
+/** Yeni sürümde olması gereken düğümler. Yoksa sayfa bayattır. */
+const REQUIRED = ['#screen-login', '#btn-google', '#screen-packs', '#team-picker'];
+
+function pageIsStale() {
+  return REQUIRED.some(sel => !document.querySelector(sel));
+}
+
+function showBootError(msg) {
   const box = document.querySelector('#boot-status');
-  box.textContent = err?.message || 'Uygulama başlatılamadı.';
-  box.classList.add('error');
+  if (box) { box.textContent = msg; box.classList.add('error'); }
   document.querySelector('#screen-boot .spinner')?.remove();
+}
+
+document.querySelector('#screen-boot')?.classList.add('active');
+
+if (pageIsStale()) {
+  // Eski sayfa + yeni betik: aynı adresi tekrar istemek önbellekten dönebilir,
+  // bu yüzden sorgu parametresiyle taze bir adres isteriz. Döngüye girmemek
+  // için sekme başına bir kez.
+  if (sessionStorage.getItem(RELOAD_FLAG)) {
+    showBootError('Sayfa güncellenemedi. Tarayıcıyı kapatıp tekrar aç ya da sayfayı sert yenile.');
+  } else {
+    try { sessionStorage.setItem(RELOAD_FLAG, '1'); } catch { /* depolama kapalı */ }
+    const url = new URL(location.href);
+    url.searchParams.set('v', Date.now().toString(36));
+    location.replace(url.toString());
+  }
+} else {
+  try { sessionStorage.removeItem(RELOAD_FLAG); } catch { /* yoksay */ }
+  try {
+    const { start } = await import('./main.js');
+    await start();
+  } catch (err) {
+    console.error(err);
+    showBootError(err?.message || 'Uygulama başlatılamadı.');
+  }
 }
