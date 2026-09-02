@@ -1,6 +1,8 @@
 # Frekans
 
-**Yayında: <https://frekans-f3067.web.app>**
+**Yayında: <https://frekans-f3067.firebaseapp.com>**
+
+*(`.web.app` adresi de çalışır, otomatik buraya taşır.)*
 
 [Wavelength](https://en.wikipedia.org/wiki/Wavelength_(game)) oyununun arkadaş
 grubu için web klonu. Herkes kendi telefonundan girer, spektrum kartlarını
@@ -82,6 +84,16 @@ kısıt yalnızca arayüzde değil, güvenlik kurallarında da uygulanır.
 
 Misafirken Google'a geçersen **aynı kimlik korunur**: oyunun ortasında
 odandan düşmezsin.
+
+> **Alan adı uyarısı.** Uygulama, `config.js`'teki `authDomain` ile **aynı
+> origin**'de çalışmak zorunda; farklı origin'de Safari giriş sonucunu
+> uygulamaya geri veremiyor. Google'ın otomatik oluşturduğu OAuth istemcisi de
+> yalnızca `<proje>.firebaseapp.com/__/auth/handler` adresini tanıyor, `.web.app`
+> ile `redirect_uri_mismatch` veriyor. Bu yüzden kanonik adres
+> `firebaseapp.com`; `app.js` başka bir Firebase alan adından açılan sayfayı
+> oraya taşıyor. Kısa adresi kullanmak istersen Cloud Console → Credentials'ta
+> `https://<proje>.web.app/__/auth/handler` adresini de yetkilendir ve
+> `authDomain`'i değiştir.
 
 Oturumlar iki türlü saklanır:
 

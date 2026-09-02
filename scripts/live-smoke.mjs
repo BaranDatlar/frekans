@@ -11,7 +11,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
-const BASE = 'https://frekans-f3067.web.app';
+// Uygulama authDomain ile aynı origin'de çalışmak zorunda (giriş akışı için).
+const BASE = 'https://frekans-f3067.firebaseapp.com';
+const SHORT = 'https://frekans-f3067.web.app';
 const DB = 'https://frekans-f3067-default-rtdb.europe-west1.firebasedatabase.app';
 const CODE = 'SMOK';
 
@@ -52,6 +54,13 @@ for (const path of ['/', '/index.html', '/js/main.js']) {
   assert.match(cc, /no-cache/, `${path} önbelleklenmemeli, gelen: "${cc}"`);
 }
 console.log('✔ önbellek başlıkları doğru (kök dahil)');
+
+// Giriş akışının çalışması için OAuth yönlendirme adresi bu origin'de olmalı
+assert.ok((await fetch(`${BASE}/__/auth/handler`)).ok, 'auth handler aynı origin\'de olmalı');
+const cfg = await (await fetch(`${BASE}/js/config.js`)).text();
+assert.match(cfg, new RegExp(`authDomain: "${new URL(BASE).hostname}"`),
+  'authDomain uygulamanın origin\'i ile aynı olmalı');
+console.log('✔ authDomain ve auth handler aynı origin\'de');
 
 await setupRoom();
 console.log('test odası kuruldu:', CODE);
